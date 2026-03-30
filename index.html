@@ -151,6 +151,12 @@
       </div>
       
       <form id="chatForm" class="flex items-center gap-3 p-5 max-w-5xl mx-auto w-full relative">
+  <input type="file" id="fileUploadInput" class="hidden">
+  
+  <button type="button" onclick="document.getElementById('fileUploadInput').click()" class="text-slate-400 hover:text-indigo-600 transition-colors p-2 rounded-full hover:bg-slate-100 flex items-center justify-center" title="Attach File">
+    <i id="attachBtnIcon" class="fa-solid fa-paperclip text-lg"></i>
+  </button>
+
   <button type="button" onclick="toggleGiphyPanel()" class="text-slate-400 hover:text-indigo-600 transition-colors p-2 rounded-full hover:bg-slate-100 flex items-center justify-center">
     <i class="fa-solid fa-face-smile text-lg"></i>
   </button>
@@ -477,8 +483,32 @@
   // --- MESSAGE ACTIONS (GLOBAL EXPORTS) ---
   window.toggleMenu = (e, id) => {
     e.stopPropagation();
-    closeAllMenus();
-    document.getElementById(`menu-${id}`).classList.toggle('hidden');
+    
+    const menu = document.getElementById(`menu-${id}`);
+    const isCurrentlyHidden = menu.classList.contains('hidden');
+    
+    // Close all menus first so we don't have multiples open
+    closeAllMenus(); 
+    
+    // Only proceed if we are trying to open the menu
+    if (isCurrentlyHidden) {
+      // 1. Get the exact position of the 3-dots button on the screen
+      const buttonRect = e.currentTarget.getBoundingClientRect();
+      
+      // 2. Check if there is enough space below the button (approx 240px for the menu)
+      if (window.innerHeight - buttonRect.bottom < 240) {
+        // Not enough space: Open UPWARDS 
+        menu.classList.remove('top-8');
+        menu.classList.add('bottom-8');
+      } else {
+        // Plenty of space: Open DOWNWARDS (default)
+        menu.classList.remove('bottom-8');
+        menu.classList.add('top-8');
+      }
+      
+      // 3. Show the menu
+      menu.classList.remove('hidden');
+    }
   };
 
   window.closeAllMenus = () => {
@@ -618,9 +648,22 @@ function renderOrUpdateMessage(docId, m) {
     `;
 
     // 🔥 NEW: Check if there is a fileUrl (like a GIPHY link) and create an image tag
+    // Check if there is a fileUrl and render appropriately
     let mediaHtml = '';
     if (m.fileUrl) {
-      mediaHtml = `<img src="${m.fileUrl}" class="max-w-[250px] rounded-lg shadow-sm border ${isMe ? 'border-indigo-400' : 'border-slate-200'}" alt="GIF" loading="lazy">`;
+      // If it's an image or GIF (fallback to true if fileType is missing for older msgs)
+      const isImage = !m.fileType || m.fileType.startsWith('image/');
+      
+      if (isImage) {
+        mediaHtml = `<img src="${m.fileUrl}" class="max-w-[250px] mt-2 rounded-lg shadow-sm border ${isMe ? 'border-indigo-400' : 'border-slate-200'}" alt="Attached Media" loading="lazy">`;
+      } else {
+        // If it's a generic file, render a download card
+        mediaHtml = `
+          <a href="${m.fileUrl}" target="_blank" class="flex items-center gap-3 mt-2 p-2.5 bg-black/5 rounded-lg border border-black/10 hover:bg-black/10 transition-colors no-underline">
+            <i class="fa-solid fa-file-arrow-down text-xl ${isMe ? 'text-indigo-100' : 'text-indigo-500'}"></i>
+            <span class="text-sm font-semibold truncate max-w-[150px] ${isMe ? 'text-white' : 'text-slate-700'}">${m.fileName || 'Download File'}</span>
+          </a>`;
+      }
     }
 
     // 🔥 FIXED: Added 'break-words' to the class list to prevent layout stretching
@@ -650,15 +693,23 @@ function renderOrUpdateMessage(docId, m) {
       window.replyMessage = window.startReply;
   }
   // --- SUBMIT MESSAGE ---
+  // --- SUBMIT MESSAGE ---
   document.getElementById('chatForm').onsubmit = async (e) => {
     e.preventDefault();
     const input = document.getElementById('messageInput');
     const text = input.value.trim();
     if (!text) return;
 
+    // 1. Save the current state locally
+    const currentActionType = actionState.type;
+    const currentActionDocId = actionState.docId;
+
+    // 2. Clear the UI immediately to prevent spamming
+    cancelAction(); 
+
     try {
-      if (actionState.type === 'edit') {
-        await updateDoc(doc(db, "rooms", currentRoomId, "messages", actionState.docId), {
+      if (currentActionType === 'edit') {
+        await updateDoc(doc(db, "rooms", currentRoomId, "messages", currentActionDocId), {
           text: text,
           isEdited: true
         });
@@ -670,10 +721,10 @@ function renderOrUpdateMessage(docId, m) {
           time: serverTimestamp()
         };
         
-        if (actionState.type === 'reply') {
-          const originalMsg = window.loadedMessages[actionState.docId];
+        if (currentActionType === 'reply') {
+          const originalMsg = window.loadedMessages[currentActionDocId];
           payload.replyTo = {
-            id: actionState.docId,
+            id: currentActionDocId,
             nickname: originalMsg.nickname,
             text: originalMsg.text.substring(0, 50) + (originalMsg.text.length > 50 ? '...' : '')
           };
@@ -681,12 +732,65 @@ function renderOrUpdateMessage(docId, m) {
         await addDoc(collection(db, "rooms", currentRoomId, "messages"), payload);
       }
       
-      cancelAction();
       setTimeout(() => document.getElementById('messageBox').scrollTop = document.getElementById('messageBox').scrollHeight, 100);
     } catch(err) {
+      // 3. If the database fails, put the text back so the user doesn't lose their message
+      input.value = text;
       alert("Action failed: " + err.message);
     }
   };
+
+// --- FILE UPLOAD LOGIC (Cloudinary) ---
+  const CLOUDINARY_CLOUD_NAME = 'djugbnsi4'; 
+  const CLOUDINARY_UPLOAD_PRESET = 'webchatapp'; 
+
+  document.getElementById('fileUploadInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const attachBtnIcon = document.getElementById('attachBtnIcon');
+    // Change icon to a spinner while uploading
+    attachBtnIcon.className = "fa-solid fa-circle-notch fa-spin text-indigo-500";
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+
+    try {
+      // Use 'auto' to handle both images and raw files (like PDFs)
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`, {
+        method: 'POST',
+        body: formData
+      });
+      
+      const data = await res.json();
+      
+      if (data.secure_url) {
+        // Save to Firestore once we have the URL
+        await addDoc(collection(db, "rooms", currentRoomId, "messages"), {
+          uid: auth.currentUser.uid,
+          nickname: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
+          text: `Sent a file: ${file.name}`, // Keeps your security rules happy (must be a string)
+          fileUrl: data.secure_url,
+          fileType: file.type || data.resource_type,
+          fileName: file.name,
+          time: serverTimestamp()
+        });
+        
+        // Scroll to bottom
+        const box = document.getElementById('messageBox');
+        setTimeout(() => box.scrollTop = box.scrollHeight, 100);
+      } else {
+        throw new Error(data.error?.message || "Upload failed");
+      }
+    } catch (err) {
+      alert("Error uploading file: " + err.message);
+    } finally {
+      // Reset icon and input
+      attachBtnIcon.className = "fa-solid fa-paperclip text-lg";
+      e.target.value = ''; 
+    }
+  });
 
  // --- GIPHY LOGIC ---
 const GIPHY_API_KEY = 'TbcofJ30evYoPwTW8w2WCS4gBZD01hVh';
