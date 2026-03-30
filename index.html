@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Nexus Chat | Premium</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+  tailwind.config = {
+    darkMode: 'class',
+  }
+  </script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -95,6 +100,92 @@
   </div>
 </div>
 
+<div id="profileModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[70] hidden">
+  <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden p-8" onclick="event.stopPropagation()">
+    <div class="flex justify-between items-center mb-6">
+      <h3 class="font-bold text-xl text-slate-800 dark:text-white">Edit Profile</h3>
+      <button onclick="closeModals()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+    <div class="flex flex-col items-center mb-4">
+      <img id="profileAvatarPreview" src="https://ui-avatars.com/api/?name=User" class="w-24 h-24 rounded-full object-cover shadow-md mb-3 border-4 border-slate-100 dark:border-slate-700">
+      <button onclick="document.getElementById('avatarUploadInput').click()" class="text-sm text-indigo-600 dark:text-indigo-400 font-semibold hover:underline">Change Avatar</button>
+      <input type="file" id="avatarUploadInput" class="hidden" accept="image/*">
+    </div>
+    <form id="profileForm" class="space-y-4">
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Display Name</label>
+        <input type="text" id="profileName" required class="w-full px-4 py-3 bg-slate-50 dark:bg-slate-700 dark:text-white border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Status Message</label>
+        <input type="text" id="profileStatus" placeholder="e.g. Working from home 🏡" class="w-full px-4 py-3 bg-slate-50 dark:bg-slate-700 dark:text-white border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Bio / About Me</label>
+        <textarea id="profileBio" rows="3" class="w-full px-4 py-3 bg-slate-50 dark:bg-slate-700 dark:text-white border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none resize-none"></textarea>
+      </div>
+      <button type="submit" id="saveProfileBtn" class="w-full bg-indigo-600 text-white py-3.5 rounded-xl font-bold mt-4 hover:bg-indigo-700 transition-all">Save Changes</button>
+    </form>
+  </div>
+</div>
+
+<div id="publicProfileModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[70] hidden" onclick="closeModals()">
+  <div class="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden p-8 text-center relative" onclick="event.stopPropagation()">
+    <button onclick="closeModals()" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-xl"></i></button>
+    <img id="publicAvatar" src="" class="w-28 h-28 rounded-full object-cover shadow-lg mx-auto mb-4 border-4 border-slate-100 dark:border-slate-700">
+    <h3 id="publicName" class="font-bold text-2xl text-slate-800 dark:text-white"></h3>
+    <p id="publicStatus" class="text-indigo-600 dark:text-indigo-400 font-medium text-sm mb-4"></p>
+    <div class="bg-slate-50 dark:bg-slate-700 p-4 rounded-xl text-left">
+      <p class="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">About Me</p>
+      <p id="publicBio" class="text-sm text-slate-700 dark:text-slate-200"></p>
+    </div>
+  </div>
+</div>
+
+<div id="settingsModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[70] hidden" onclick="closeModals()">
+  <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden p-8" onclick="event.stopPropagation()">
+    <div class="flex justify-between items-center mb-6">
+      <h3 class="font-bold text-xl text-slate-800 dark:text-white"><i class="fa-solid fa-gear mr-2"></i> App Settings</h3>
+      <button onclick="closeModals()" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+    
+    <div class="space-y-6">
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="font-semibold text-slate-800 dark:text-white">Dark Mode</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Toggle app appearance</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="themeToggle" class="sr-only peer" onchange="toggleTheme()">
+          <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+        </label>
+      </div>
+
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="font-semibold text-slate-800 dark:text-white">Send Message Mode</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Require Shift+Enter to send</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="sendModeToggle" class="sr-only peer" onchange="toggleSendMode()">
+          <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+        </label>
+      </div>
+
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="font-semibold text-slate-800 dark:text-white">Mute Notifications</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Silence all browser alerts</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="muteToggle" class="sr-only peer" onchange="toggleMute()">
+          <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-500"></div>
+        </label>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="app" class="flex h-screen hidden">
   <aside class="w-80 bg-[#111827] text-white flex flex-col border-r border-slate-800 shadow-xl z-20">
     <div class="h-16 px-6 border-b border-slate-800 flex justify-between items-center bg-[#1f2937]">
@@ -119,13 +210,14 @@
       <div id="roomsList"></div>
     </div>
 
-    <div class="p-5 bg-[#0b0f19] border-t border-slate-800 flex items-center gap-4">
-      <div class="w-11 h-11 rounded-full bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center font-bold text-lg shadow-inner ring-2 ring-slate-800" id="userInitial">?</div>
-      <div class="flex-1 min-w-0">
-        <p id="userName" class="text-sm font-bold truncate text-slate-200"></p>
-        <p class="text-[11px] font-medium text-emerald-400 uppercase">Online</p>
-      </div>
-    </div>
+    <div class="p-4 bg-[#0b0f19] border-t border-slate-800 flex items-center gap-3">
+  <img id="sidebarAvatar" src="" class="w-11 h-11 rounded-full object-cover shadow-inner ring-2 ring-slate-800 cursor-pointer hover:opacity-80 transition" onclick="openProfileModal()">
+  <div class="flex-1 min-w-0 cursor-pointer" onclick="openProfileModal()">
+    <p id="userName" class="text-sm font-bold truncate text-slate-200"></p>
+    <p id="userPresence" class="text-[11px] font-medium text-emerald-400 uppercase flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Online</p>
+  </div>
+  <button onclick="openSettingsModal()" class="text-slate-400 hover:text-white transition p-2"><i class="fa-solid fa-gear"></i></button>
+</div>
   </aside>
 
   <main class="flex-1 flex flex-col relative bg-white">
@@ -177,8 +269,9 @@
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
-  import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, setDoc, deleteDoc, updateDoc, getDocs, where } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
+  import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, setDoc, deleteDoc, updateDoc, getDocs, where, getDoc } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
   import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
+  import { getDatabase, ref, onValue, set, onDisconnect, serverTimestamp as rtdbTimestamp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-database.js";
 
   const app = initializeApp({
     apiKey: "AIzaSyDmQiNQx2oTSydrFLgGhORXsxBjRAnghr4",
@@ -186,6 +279,30 @@
     projectId: "chatting-f6656"
   });
   
+  const dbRTDB = getDatabase(app);
+
+// App Settings State
+let appSettings = JSON.parse(localStorage.getItem('nexusSettings')) || {
+  theme: 'light',
+  requireShiftEnter: false,
+  muted: false
+};
+
+// Apply saved theme immediately
+if (appSettings.theme === 'dark') {
+  document.documentElement.classList.add('dark');
+  document.getElementById('themeToggle').checked = true;
+}
+document.getElementById('sendModeToggle').checked = appSettings.requireShiftEnter;
+document.getElementById('muteToggle').checked = appSettings.muted;
+
+// Global Modals Helper
+window.closeModals = () => {
+  document.getElementById('profileModal').classList.add('hidden');
+  document.getElementById('publicProfileModal').classList.add('hidden');
+  document.getElementById('settingsModal').classList.add('hidden');
+};
+
   const db = getFirestore(app);
   const auth = getAuth(app);
 
@@ -230,25 +347,39 @@
 
   window.logout = () => signOut(auth);
 
-  onAuthStateChanged(auth, u => {
-    if (u) {
-      document.getElementById('authOverlay').classList.add('hidden');
-      document.getElementById('app').classList.remove('hidden');
-      document.getElementById('userName').textContent = u.displayName || u.email.split('@')[0];
-      document.getElementById('userInitial').textContent = (u.displayName || u.email).charAt(0).toUpperCase();
-      
-      // 🔥 NEW: Ask for Chrome Notification Permission
-      if ("Notification" in window && Notification.permission === "default") {
-        Notification.requestPermission();
-      }
+  onAuthStateChanged(auth, async u => {
+  if (u) {
+    document.getElementById('authOverlay').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
+    
+    // Fetch User Profile
+    const userDoc = await getDoc(doc(db, "users", u.uid));
+    const userData = userDoc.exists() ? userDoc.data() : {};
+    
+    const displayAvatar = userData.avatarUrl || `https://ui-avatars.com/api/?name=${u.displayName || u.email}&background=6366f1&color=fff`;
+    document.getElementById('userName').textContent = userData.nickname || u.displayName || u.email.split('@')[0];
+    document.getElementById('sidebarAvatar').src = displayAvatar;
 
-      loadRooms();
-      switchRoom('general', 'general', 'public');
-    } else {
-      document.getElementById('authOverlay').classList.remove('hidden');
-      document.getElementById('app').classList.add('hidden');
-    }
-  });
+    // --- REALTIME PRESENCE ---
+    const userStatusRef = ref(dbRTDB, '/status/' + u.uid);
+    const connectedRef = ref(dbRTDB, '.info/connected');
+    
+    onValue(connectedRef, (snap) => {
+      if (snap.val() === true) {
+        const con = onDisconnect(userStatusRef);
+        con.set({ state: 'offline', last_changed: rtdbTimestamp() }).then(() => {
+          set(userStatusRef, { state: 'online', last_changed: rtdbTimestamp() });
+        });
+      }
+    });
+
+    loadRooms();
+    switchRoom('general', 'general', 'public');
+  } else {
+    document.getElementById('authOverlay').classList.remove('hidden');
+    document.getElementById('app').classList.add('hidden');
+  }
+});
 
   // --- CREATE ROOM LOGIC ---
   window.openCreateRoomModal = () => {
@@ -607,6 +738,43 @@
     }
   });
     
+  window.openSettingsModal = () => document.getElementById('settingsModal').classList.remove('hidden');
+
+window.toggleTheme = () => {
+  appSettings.theme = document.getElementById('themeToggle').checked ? 'dark' : 'light';
+  document.documentElement.classList.toggle('dark', appSettings.theme === 'dark');
+  localStorage.setItem('nexusSettings', JSON.stringify(appSettings));
+};
+
+window.toggleSendMode = () => {
+  appSettings.requireShiftEnter = document.getElementById('sendModeToggle').checked;
+  localStorage.setItem('nexusSettings', JSON.stringify(appSettings));
+};
+
+window.toggleMute = () => {
+  appSettings.muted = document.getElementById('muteToggle').checked;
+  localStorage.setItem('nexusSettings', JSON.stringify(appSettings));
+};
+
+// UPDATE YOUR EXISTING EVENT LISTENER:
+messageInput.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    if (appSettings.requireShiftEnter) {
+      // If setting is ON, Enter adds a new line, Shift+Enter sends.
+      if (e.shiftKey) {
+        e.preventDefault();
+        document.querySelector('#chatForm button[type="submit"]').click();
+      }
+    } else {
+      // If setting is OFF (Default), Enter sends, Shift+Enter adds a line.
+      if (!e.shiftKey) {
+        e.preventDefault();
+        document.querySelector('#chatForm button[type="submit"]').click();
+      }
+    }
+  }
+});
+
   // --- RENDERING ---
 function renderOrUpdateMessage(docId, m) {
     const box = document.getElementById('messageBox');
@@ -676,7 +844,7 @@ function renderOrUpdateMessage(docId, m) {
     existingDiv.innerHTML = `
       <div class="max-w-[75%] flex flex-col ${isMe ? 'items-end' : 'items-start'}">
         <div class="flex items-baseline gap-2 mb-1 px-1">
-          ${!isMe ? `<span class="text-xs font-semibold text-slate-600">${m.nickname}</span>` : ''}
+          ${!isMe ? `<span class="text-xs font-semibold text-slate-600 cursor-pointer hover:text-indigo-600 hover:underline transition-colors" onclick="viewPublicProfile('${m.uid}')">${m.nickname}</span>` : ''}
           <span class="text-[10px] font-medium text-slate-400">${timeString} ${m.isEdited ? '(edited)' : ''}</span>
         </div>
         <div class="flex items-center ${isMe ? 'flex-row-reverse' : 'flex-row'}">
@@ -692,7 +860,7 @@ function renderOrUpdateMessage(docId, m) {
       
       window.replyMessage = window.startReply;
   }
-  // --- SUBMIT MESSAGE ---
+  
   // --- SUBMIT MESSAGE ---
   document.getElementById('chatForm').onsubmit = async (e) => {
     e.preventDefault();
@@ -840,6 +1008,88 @@ window.sendGiphy = async (url) => {
     document.getElementById('giphyPanel').classList.add('hidden');
   } catch (err) { alert(err.message); }
 };
+
+let currentAvatarUrl = "";
+
+window.openProfileModal = async () => {
+  const userDoc = await getDoc(doc(db, "users", auth.currentUser.uid));
+  const data = userDoc.exists() ? userDoc.data() : {};
+  
+  document.getElementById('profileName').value = data.nickname || auth.currentUser.displayName || "";
+  document.getElementById('profileStatus').value = data.status || "";
+  document.getElementById('profileBio').value = data.bio || "";
+  
+  currentAvatarUrl = data.avatarUrl || `https://ui-avatars.com/api/?name=${data.nickname}&background=6366f1&color=fff`;
+  document.getElementById('profileAvatarPreview').src = currentAvatarUrl;
+  
+  document.getElementById('profileModal').classList.remove('hidden');
+};
+
+// Avatar Upload via existing Cloudinary logic
+document.getElementById('avatarUploadInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+
+  try {
+    document.getElementById('profileAvatarPreview').style.opacity = '0.5';
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
+      method: 'POST', body: formData
+    });
+    const data = await res.json();
+    currentAvatarUrl = data.secure_url;
+    document.getElementById('profileAvatarPreview').src = currentAvatarUrl;
+  } catch(err) {
+    alert("Avatar upload failed");
+  } finally {
+    document.getElementById('profileAvatarPreview').style.opacity = '1';
+  }
+});
+
+document.getElementById('profileForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('saveProfileBtn');
+  btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Saving...';
+  
+  try {
+    const newName = document.getElementById('profileName').value;
+    await updateDoc(doc(db, "users", auth.currentUser.uid), {
+      nickname: newName,
+      status: document.getElementById('profileStatus').value,
+      bio: document.getElementById('profileBio').value,
+      avatarUrl: currentAvatarUrl
+    });
+    
+    document.getElementById('userName').textContent = newName;
+    document.getElementById('sidebarAvatar').src = currentAvatarUrl;
+    closeModals();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.innerHTML = 'Save Changes';
+  }
+};
+
+window.viewPublicProfile = async (uid) => {
+  try {
+    const userDoc = await getDoc(doc(db, "users", uid));
+    if (!userDoc.exists()) return alert("User profile not found.");
+    
+    const data = userDoc.data();
+    document.getElementById('publicName').textContent = data.nickname || "Unknown User";
+    document.getElementById('publicStatus').textContent = data.status || "No status set";
+    document.getElementById('publicBio').textContent = data.bio || "This user hasn't written a bio yet.";
+    document.getElementById('publicAvatar').src = data.avatarUrl || `https://ui-avatars.com/api/?name=${data.nickname}&background=6366f1&color=fff`;
+    
+    document.getElementById('publicProfileModal').classList.remove('hidden');
+  } catch (err) {
+    console.error(err);
+  }
+};
+
 </script>
 </body>
 </html>
