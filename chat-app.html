@@ -1,0 +1,192 @@
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Simple Chat (Safer)</title>
+    </head>
+    <body>
+    
+    <h2>Simple Chat</h2>
+    
+    <div id="chatBox"></div>
+    
+    <input id="messageInput" placeholder="Type message..." />
+    <button onclick="sendMessage()">Send</button>
+    <button onclick="changeNickname()">Change Nickname</button>
+    
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
+      import { 
+      getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp,
+      doc, getDoc, setDoc
+      } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
+    
+      import { 
+        getAuth, signInAnonymously, onAuthStateChanged 
+      } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
+    
+      // 🔥 Your Firebase config
+      const firebaseConfig = {
+        apiKey: "AIzaSyDmQiNQx2oTSydrFLgGhORXsxBjRAnghr4",
+        authDomain: "chatting-f6656.firebaseapp.com",
+        projectId: "chatting-f6656"
+      };
+    
+      const app = initializeApp(firebaseConfig);
+      const db = getFirestore(app);
+      const auth = getAuth(app);
+    
+      const chatRef = collection(db, "messages");
+    
+      let currentUser = null;
+      let currentNickname = null;
+      let firstLoad = true;
+
+      window.changeNickname = async function () {
+  if (!currentUser) {
+    alert("Not authenticated yet");
+    return;
+  }
+
+  let newName = prompt("Enter new nickname:");
+
+  if (!newName || newName.trim() === "") return;
+
+  newName = newName.trim().substring(0, 20);
+
+  try {
+    const userRef = doc(db, "users", currentUser.uid);
+
+    await setDoc(userRef, {
+      nickname: newName
+    });
+
+    currentNickname = newName;
+
+    alert("Nickname updated!");
+
+  } catch (err) {
+    console.error("Error updating nickname:", err);
+  }
+};
+
+
+      if ("Notification" in window) {
+  Notification.requestPermission().then(permission => {
+    console.log("Notification permission:", permission);
+  });
+}
+        
+      // ✅ Sign in anonymously
+      signInAnonymously(auth).catch(console.error);
+    
+      // ✅ Wait for auth
+      onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        currentUser = user;
+    
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userRef);
+    
+        if (!userSnap.exists()) {
+          let nickname = prompt("Enter a nickname:");
+    
+          if (!nickname || nickname.trim() === "") {
+            nickname = "User_" + user.uid.substring(0, 5);
+          }
+    
+          nickname = nickname.trim().substring(0, 20);
+    
+          await setDoc(userRef, {
+            nickname: nickname
+          });
+    
+          currentNickname = nickname;
+    
+        } else {
+          currentNickname = userSnap.data().nickname;
+        }
+    
+        console.log("Logged in as:", user.uid, currentNickname);
+      }
+    });
+    
+      // ✅ Send message (secure)
+      window.sendMessage = async function () {
+        const input = document.getElementById("messageInput");
+    
+        if (!currentUser) {
+          alert("Not authenticated yet");
+          return;
+        }
+    
+        const text = input.value.trim();
+    
+        // ✅ Validation
+        if (text === "") return;
+        if (text.length > 200) {
+          alert("Message too long (max 200 chars)");
+          return;
+        }
+    
+        try {
+          await addDoc(chatRef, {
+            uid: currentUser.uid,
+            nickname: currentNickname,
+            text: text,
+            time: serverTimestamp()
+          });
+    
+          input.value = "";
+        } catch (err) {
+          console.error("Error sending message:", err);
+        }
+      };
+    
+      // ✅ Real-time listener
+      const q = query(chatRef, orderBy("time", "asc"));
+        
+      onSnapshot(q, (snapshot) => {
+  const chatBox = document.getElementById("chatBox");
+  chatBox.innerHTML = "";
+
+  snapshot.docChanges().forEach(change => {
+    if (change.type === "added") {
+      const m = change.doc.data();
+
+      // Skip incomplete docs
+      if (!m.time) return;
+
+      // 🔔 Send notification (not on first load, not your own message)
+      if (!firstLoad && m.uid !== currentUser.uid) {
+        if (Notification.permission === "granted") {
+          new Notification(m.nickname, {
+            body: m.text,
+          });
+        }
+      }
+    }
+  });
+
+  firstLoad = false;
+
+  // Render messages (your existing logic)
+  snapshot.forEach(docSnap => {
+    const m = docSnap.data();
+    if (!m.time) return;
+
+    const p = document.createElement("p");
+
+    const bold = document.createElement("b");
+    bold.textContent = m.nickname + ": ";
+
+    p.appendChild(bold);
+    p.appendChild(document.createTextNode(m.text));
+
+    chatBox.appendChild(p);
+  });
+});
+    
+    </script>
+    
+    </body>
+    </html>
