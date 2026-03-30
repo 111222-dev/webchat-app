@@ -151,38 +151,28 @@
       </div>
       
       <form id="chatForm" class="flex items-center gap-3 p-5 max-w-5xl mx-auto w-full relative">
-  <label for="fileUpload" class="cursor-pointer text-slate-400 hover:text-indigo-600 transition-colors p-2 rounded-full hover:bg-slate-100 flex items-center justify-center">
-    <i class="fa-solid fa-paperclip text-lg"></i>
-    <input type="file" id="fileUpload" class="hidden" accept="image/*,video/*,audio/*,.pdf,.zip" />
-  </label>
-  
-  <input type="text" id="messageInput" autocomplete="off" placeholder="Message this channel..." class="flex-1 bg-slate-100 border border-slate-200 rounded-full pl-6 pr-14 py-3.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all shadow-inner font-medium">
-  
-  <button type="button" id="micBtn" class="text-slate-400 hover:text-indigo-600 transition-colors p-2 rounded-full hover:bg-slate-100 flex items-center justify-center absolute right-20">
-    <i class="fa-solid fa-microphone text-lg"></i>
+  <button type="button" onclick="toggleGiphyPanel()" class="text-slate-400 hover:text-indigo-600 transition-colors p-2 rounded-full hover:bg-slate-100 flex items-center justify-center">
+    <i class="fa-solid fa-face-smile text-lg"></i>
   </button>
-
+  
+  <textarea id="messageInput" rows="1" placeholder="Message this channel..." class="flex-1 bg-slate-100 border border-slate-200 rounded-3xl pl-6 pr-14 py-3 focus:bg-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all shadow-inner font-medium resize-none overflow-hidden min-h-[48px] max-h-32 leading-relaxed mt-1 mb-1"></textarea>
+  
   <button type="submit" class="absolute right-7 top-6.5 bottom-6.5 aspect-square bg-indigo-600 text-white rounded-full flex items-center justify-center w-10 h-10 hover:bg-indigo-700 shadow-md transition-all">
     <i class="fa-solid fa-paper-plane text-sm ml-0.5"></i>
   </button>
-</form>
 
-<div id="uploadProgressContainer" class="hidden absolute bottom-24 left-1/2 transform -translate-x-1/2 w-64 bg-white p-3 rounded-xl shadow-lg border border-slate-200 z-50">
-  <div class="flex justify-between text-xs font-bold text-slate-600 mb-1">
-    <span>Uploading...</span>
-    <span id="uploadPercentage">0%</span>
+  <div id="giphyPanel" class="hidden absolute bottom-20 left-0 w-80 bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden z-50">
+    <div class="p-3 border-b border-slate-100 bg-slate-50">
+      <input type="text" id="giphySearchInput" placeholder="Search GIPHY..." class="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500">
+    </div>
+    <div id="giphyResults" class="grid grid-cols-2 gap-1 p-1 max-h-60 overflow-y-auto"></div>
   </div>
-  <div class="w-full bg-slate-200 rounded-full h-2">
-    <div id="uploadProgressBar" class="bg-indigo-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-  </div>
-</div>
+</form>
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
   import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, setDoc, deleteDoc, updateDoc, getDocs, where } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
-  // 🔥 FIX: Added the missing closing quote and semicolon here!
   import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
-  import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-storage.js";
 
   const app = initializeApp({
     apiKey: "AIzaSyDmQiNQx2oTSydrFLgGhORXsxBjRAnghr4",
@@ -192,7 +182,6 @@
   
   const db = getFirestore(app);
   const auth = getAuth(app);
-  const storage = getStorage(app);
 
   let isSignUpMode = false;
   let currentRoomId = "general";
@@ -534,9 +523,12 @@
   window.cancelAction = () => {
     actionState = { type: null, docId: null };
     document.getElementById('actionBanner').classList.add('hidden');
-    document.getElementById('messageInput').value = '';
+    
+    const input = document.getElementById('messageInput');
+    input.value = '';
+    input.style.height = 'auto'; // 🔥 NEW: Shrink it back down!
   };
-
+    
   // --- FORWARDING ---
   window.openForwardModal = (id) => {
     const text = window.loadedMessages[id].text;
@@ -567,7 +559,24 @@
 
   window.closeForwardModal = () => document.getElementById('forwardModal').classList.add('hidden');
 
+// --- AUTO-EXPANDING TEXTAREA LOGIC ---
+  const messageInput = document.getElementById('messageInput');
 
+  messageInput.addEventListener('input', function() {
+    // 1. Reset height to auto to recalculate shrinking
+    this.style.height = 'auto';
+    // 2. Set the height to match the new scrollHeight
+    this.style.height = this.scrollHeight + 'px';
+  });
+
+  messageInput.addEventListener('keydown', function(e) {
+    // 3. If pressing Enter WITHOUT holding Shift, send the message
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault(); // Stop it from dropping to a new line
+      document.querySelector('#chatForm button[type="submit"]').click(); // Trigger form submission
+    }
+  });
+    
   // --- RENDERING ---
 function renderOrUpdateMessage(docId, m) {
     const box = document.getElementById('messageBox');
@@ -575,7 +584,7 @@ function renderOrUpdateMessage(docId, m) {
     let timeString = m.time ? m.time.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
     let existingDiv = document.getElementById(`msg-${docId}`);
-    if (!existingDiv) {
+    if(!existingDiv) {
       existingDiv = document.createElement('div');
       existingDiv.id = `msg-${docId}`;
       box.appendChild(existingDiv);
@@ -584,16 +593,12 @@ function renderOrUpdateMessage(docId, m) {
     existingDiv.className = `flex group w-full transition-all duration-200 relative ${isMe ? 'justify-end' : 'justify-start'}`;
     
     let replyHtml = '';
-    if (m.replyTo) {
+    if(m.replyTo) {
       replyHtml = `
         <div class="mb-1 bg-slate-100/50 rounded-lg p-2 border-l-4 border-indigo-400 text-xs text-slate-500 truncate max-w-[200px]">
           <span class="font-bold">${m.replyTo.nickname}</span>: ${m.replyTo.text}
         </div>`;
     }
-
-    // 🔥 FIX: Extracted these out to avoid nested backticks
-    const editBtn = isMe ? '<button onclick="startEdit(\'' + docId + '\')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-solid fa-pen w-5 text-slate-400"></i> Edit</button>' : '';
-    const deleteEveryoneBtn = isMe ? '<button onclick="deleteForEveryone(\'' + docId + '\')" class="w-full text-left px-4 py-2 hover:bg-red-50 text-red-600"><i class="fa-regular fa-trash-can w-5"></i> Delete for everyone</button>' : '';
 
     const dropdownMenu = `
       <div class="relative opacity-0 group-hover:opacity-100 transition-opacity flex items-center px-2">
@@ -604,45 +609,38 @@ function renderOrUpdateMessage(docId, m) {
           <button onclick="replyMessage('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-solid fa-reply w-5 text-slate-400"></i> Reply</button>
           <button onclick="copyText('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-regular fa-copy w-5 text-slate-400"></i> Copy Text</button>
           <button onclick="openForwardModal('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-solid fa-share w-5 text-slate-400"></i> Forward</button>
-          ${editBtn}
+          ${isMe ? `<button onclick="startEdit('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-solid fa-pen w-5 text-slate-400"></i> Edit</button>` : ''}
           <div class="border-t border-slate-100 my-1"></div>
           <button onclick="deleteForMe('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-regular fa-eye-slash w-5 text-slate-400"></i> Delete for me</button>
-          ${deleteEveryoneBtn}
+          ${isMe ? `<button onclick="deleteForEveryone('${docId}')" class="w-full text-left px-4 py-2 hover:bg-red-50 text-red-600"><i class="fa-regular fa-trash-can w-5"></i> Delete for everyone</button>` : ''}
         </div>
       </div>
     `;
 
-    // Determine media HTML
+    // 🔥 NEW: Check if there is a fileUrl (like a GIPHY link) and create an image tag
     let mediaHtml = '';
     if (m.fileUrl) {
-      if (m.fileType && m.fileType.startsWith('image/')) {
-        mediaHtml = `<img src="${m.fileUrl}" class="max-w-[250px] rounded-lg mt-2 cursor-pointer shadow-sm border ${isMe ? 'border-indigo-400' : 'border-slate-200'}" alt="attachment" loading="lazy">`;
-      } else {
-        mediaHtml = `<a href="${m.fileUrl}" target="_blank" class="flex items-center gap-2 p-3 mt-2 rounded-lg bg-black/10 hover:bg-black/20 transition-colors ${isMe ? 'text-white' : 'text-slate-700'} text-sm font-medium">
-          <i class="fa-solid fa-file-arrow-down text-lg"></i>
-          <span class="truncate max-w-[150px]">${m.fileName || 'Download File'}</span>
-        </a>`;
-      }
+      mediaHtml = `<img src="${m.fileUrl}" class="max-w-[250px] rounded-lg shadow-sm border ${isMe ? 'border-indigo-400' : 'border-slate-200'}" alt="GIF" loading="lazy">`;
     }
 
-    // Extracted out logic to keep HTML clean
-    const nicknameHtml = !isMe ? `<span class="text-xs font-semibold text-slate-600">${m.nickname}</span>` : '';
-    const editedHtml = m.isEdited ? '(edited)' : '';
-    const bubbleAlignment = isMe ? 'flex-row-reverse' : 'flex-row';
-    const bubbleColor = isMe 
-      ? 'bg-gradient-to-br from-indigo-500 to-indigo-600 text-white rounded-2xl rounded-tr-sm' 
-      : 'bg-white text-slate-700 rounded-2xl rounded-tl-sm border border-slate-200/60';
+    // 🔥 FIXED: Added 'break-words' to the class list to prevent layout stretching
+    // 🔥 FIXED AGAIN: Changed 'break-words' to 'break-all' for aggressive chopping
+    let textHtml = '';
+    if (m.text && m.text !== "Sent a GIF") {
+      textHtml = `<p class="text-[14.5px] leading-relaxed whitespace-pre-wrap break-all ${m.fileUrl ? 'mb-2' : ''}">${m.text}</p>`;
+    }
 
     existingDiv.innerHTML = `
       <div class="max-w-[75%] flex flex-col ${isMe ? 'items-end' : 'items-start'}">
         <div class="flex items-baseline gap-2 mb-1 px-1">
-          ${nicknameHtml}
-          <span class="text-[10px] font-medium text-slate-400">${timeString} ${editedHtml}</span>
+          ${!isMe ? `<span class="text-xs font-semibold text-slate-600">${m.nickname}</span>` : ''}
+          <span class="text-[10px] font-medium text-slate-400">${timeString} ${m.isEdited ? '(edited)' : ''}</span>
         </div>
-        <div class="flex items-center ${bubbleAlignment}">
-          <div class="px-4 py-2.5 shadow-sm relative group-hover:shadow-md transition-shadow ${bubbleColor}">
+        <div class="flex items-center ${isMe ? 'flex-row-reverse' : 'flex-row'}">
+          <div class="px-4 py-2.5 shadow-sm relative group-hover:shadow-md transition-shadow 
+            ${isMe ? 'bg-gradient-to-br from-indigo-500 to-indigo-600 text-white rounded-2xl rounded-tr-sm' : 'bg-white text-slate-700 rounded-2xl rounded-tl-sm border border-slate-200/60'}">
             ${replyHtml}
-            <p class="text-[14.5px] leading-relaxed whitespace-pre-wrap">${m.text}</p>
+            ${textHtml}
             ${mediaHtml}
           </div>
           ${dropdownMenu}
@@ -651,7 +649,6 @@ function renderOrUpdateMessage(docId, m) {
       
       window.replyMessage = window.startReply;
   }
-
   // --- SUBMIT MESSAGE ---
   document.getElementById('chatForm').onsubmit = async (e) => {
     e.preventDefault();
@@ -691,54 +688,54 @@ function renderOrUpdateMessage(docId, m) {
     }
   };
 
- // --- FILE UPLOADS ---
-document.getElementById('fileUpload').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+ // --- GIPHY LOGIC ---
+const GIPHY_API_KEY = 'TbcofJ30evYoPwTW8w2WCS4gBZD01hVh';
 
-  const storageRef = ref(storage, `rooms/${currentRoomId}/uploads/${Date.now()}_${file.name}`);
-  const uploadTask = uploadBytesResumable(storageRef, file);
+window.toggleGiphyPanel = () => {
+  const panel = document.getElementById('giphyPanel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) {
+    document.getElementById('giphySearchInput').focus();
+    searchGiphy('trending'); // Show trending by default
+  }
+};
 
-  const progressContainer = document.getElementById('uploadProgressContainer');
-  const progressBar = document.getElementById('uploadProgressBar');
-  const progressText = document.getElementById('uploadPercentage');
-
-  progressContainer.classList.remove('hidden');
-
-  uploadTask.on('state_changed', 
-    (snapshot) => {
-      const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-      progressBar.style.width = progress + '%';
-      progressText.textContent = Math.round(progress) + '%';
-    }, 
-    (error) => {
-      alert("Upload failed: " + error.message);
-      progressContainer.classList.add('hidden');
-      e.target.value = ''; // Reset input
-    }, 
-    async () => {
-      // Upload successful, get URL and send message
-      const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-      progressContainer.classList.add('hidden');
-      e.target.value = ''; 
-      
-      try {
-        await addDoc(collection(db, "rooms", currentRoomId, "messages"), {
-          uid: auth.currentUser.uid,
-          nickname: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
-          text: `Sent a file: ${file.name}`, // Fallback text
-          fileUrl: downloadURL,
-          fileName: file.name,
-          fileType: file.type,
-          time: serverTimestamp()
-        });
-        setTimeout(() => document.getElementById('messageBox').scrollTop = document.getElementById('messageBox').scrollHeight, 100);
-      } catch (err) {
-        alert("Failed to send message: " + err.message);
-      }
-    }
-  );
+// Search GIPHY as you type
+document.getElementById('giphySearchInput').addEventListener('input', (e) => {
+  const term = e.target.value.trim();
+  searchGiphy(term || 'trending');
 });
+
+async function searchGiphy(term) {
+  const endpoint = term === 'trending' 
+    ? `https://api.giphy.com/v1/gifs/trending?api_key=${GIPHY_API_KEY}&limit=10&rating=g`
+    : `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${encodeURIComponent(term)}&limit=10&rating=g`;
+  
+  try {
+    const res = await fetch(endpoint);
+    const { data } = await res.json();
+    const resultsContainer = document.getElementById('giphyResults');
+    resultsContainer.innerHTML = data.map(gif => `
+      <img src="${gif.images.fixed_height_small.url}" 
+           class="w-full h-24 object-cover cursor-pointer hover:opacity-80 rounded-md" 
+           onclick="sendGiphy('${gif.images.fixed_height.url}')">
+    `).join('');
+  } catch (err) { console.error("Giphy error:", err); }
+}
+
+window.sendGiphy = async (url) => {
+  try {
+    await addDoc(collection(db, "rooms", currentRoomId, "messages"), {
+      uid: auth.currentUser.uid,
+      nickname: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
+      text: "Sent a GIF",
+      fileUrl: url, // We reuse your existing media rendering logic!
+      fileType: "image/gif",
+      time: serverTimestamp()
+    });
+    document.getElementById('giphyPanel').classList.add('hidden');
+  } catch (err) { alert(err.message); }
+};
 </script>
 </body>
 </html>
