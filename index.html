@@ -151,19 +151,38 @@
       </div>
       
       <form id="chatForm" class="flex items-center gap-3 p-5 max-w-5xl mx-auto w-full relative">
-        <input type="text" id="messageInput" autocomplete="off" placeholder="Message this channel..." class="flex-1 bg-slate-100 border border-slate-200 rounded-full pl-6 pr-14 py-3.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all shadow-inner font-medium">
-        <button type="submit" class="absolute right-7 top-6.5 bottom-6.5 aspect-square bg-indigo-600 text-white rounded-full flex items-center justify-center w-10 h-10 hover:bg-indigo-700 shadow-md transition-all">
-          <i class="fa-solid fa-paper-plane text-sm ml-0.5"></i>
-        </button>
-      </form>
-    </div>
-  </main>
+  <label for="fileUpload" class="cursor-pointer text-slate-400 hover:text-indigo-600 transition-colors p-2 rounded-full hover:bg-slate-100 flex items-center justify-center">
+    <i class="fa-solid fa-paperclip text-lg"></i>
+    <input type="file" id="fileUpload" class="hidden" accept="image/*,video/*,audio/*,.pdf,.zip" />
+  </label>
+  
+  <input type="text" id="messageInput" autocomplete="off" placeholder="Message this channel..." class="flex-1 bg-slate-100 border border-slate-200 rounded-full pl-6 pr-14 py-3.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all shadow-inner font-medium">
+  
+  <button type="button" id="micBtn" class="text-slate-400 hover:text-indigo-600 transition-colors p-2 rounded-full hover:bg-slate-100 flex items-center justify-center absolute right-20">
+    <i class="fa-solid fa-microphone text-lg"></i>
+  </button>
+
+  <button type="submit" class="absolute right-7 top-6.5 bottom-6.5 aspect-square bg-indigo-600 text-white rounded-full flex items-center justify-center w-10 h-10 hover:bg-indigo-700 shadow-md transition-all">
+    <i class="fa-solid fa-paper-plane text-sm ml-0.5"></i>
+  </button>
+</form>
+
+<div id="uploadProgressContainer" class="hidden absolute bottom-24 left-1/2 transform -translate-x-1/2 w-64 bg-white p-3 rounded-xl shadow-lg border border-slate-200 z-50">
+  <div class="flex justify-between text-xs font-bold text-slate-600 mb-1">
+    <span>Uploading...</span>
+    <span id="uploadPercentage">0%</span>
+  </div>
+  <div class="w-full bg-slate-200 rounded-full h-2">
+    <div id="uploadProgressBar" class="bg-indigo-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+  </div>
 </div>
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
   import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, setDoc, deleteDoc, updateDoc, getDocs, where } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
+  // 🔥 FIX: Added the missing closing quote and semicolon here!
   import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
+  import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-storage.js";
 
   const app = initializeApp({
     apiKey: "AIzaSyDmQiNQx2oTSydrFLgGhORXsxBjRAnghr4",
@@ -173,6 +192,7 @@
   
   const db = getFirestore(app);
   const auth = getAuth(app);
+  const storage = getStorage(app);
 
   let isSignUpMode = false;
   let currentRoomId = "general";
@@ -295,18 +315,34 @@
 
       // If private, resolve emails to UIDs
       if (type === 'private') {
+        
+        // 🔥 FIX 2: Automatically add any email they typed but forgot to click "Add" for
+        const leftoverEmail = document.getElementById('inviteEmailInput').value.trim().toLowerCase();
+        if (leftoverEmail && leftoverEmail !== auth.currentUser.email) {
+          pendingInvites.add(leftoverEmail);
+        }
+
+        // 🔥 FIX 3: Prevent creating a private room with no one else in it
+        if (pendingInvites.size === 0) {
+          alert("You must invite at least one person to create a private channel.");
+          btn.innerHTML = 'Create Channel';
+          btn.disabled = false;
+          return;
+        }
+
         members.push(auth.currentUser.uid); // Creator is always a member
         
         for (let email of pendingInvites) {
           const q = query(collection(db, "users"), where("email", "==", email));
           const snap = await getDocs(q);
+          
           if (!snap.empty) {
             members.push(snap.docs[0].id);
           } else {
             alert(`Could not find user: ${email}. They must create an account first.`);
             btn.innerHTML = 'Create Channel';
             btn.disabled = false;
-            return; // Stop creation
+            return; // Stop creation entirely if a user isn't found
           }
         }
       }
@@ -531,14 +567,15 @@
 
   window.closeForwardModal = () => document.getElementById('forwardModal').classList.add('hidden');
 
+
   // --- RENDERING ---
-  function renderOrUpdateMessage(docId, m) {
+function renderOrUpdateMessage(docId, m) {
     const box = document.getElementById('messageBox');
     const isMe = m.uid === auth.currentUser.uid;
     let timeString = m.time ? m.time.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
     let existingDiv = document.getElementById(`msg-${docId}`);
-    if(!existingDiv) {
+    if (!existingDiv) {
       existingDiv = document.createElement('div');
       existingDiv.id = `msg-${docId}`;
       box.appendChild(existingDiv);
@@ -547,12 +584,16 @@
     existingDiv.className = `flex group w-full transition-all duration-200 relative ${isMe ? 'justify-end' : 'justify-start'}`;
     
     let replyHtml = '';
-    if(m.replyTo) {
+    if (m.replyTo) {
       replyHtml = `
         <div class="mb-1 bg-slate-100/50 rounded-lg p-2 border-l-4 border-indigo-400 text-xs text-slate-500 truncate max-w-[200px]">
           <span class="font-bold">${m.replyTo.nickname}</span>: ${m.replyTo.text}
         </div>`;
     }
+
+    // 🔥 FIX: Extracted these out to avoid nested backticks
+    const editBtn = isMe ? '<button onclick="startEdit(\'' + docId + '\')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-solid fa-pen w-5 text-slate-400"></i> Edit</button>' : '';
+    const deleteEveryoneBtn = isMe ? '<button onclick="deleteForEveryone(\'' + docId + '\')" class="w-full text-left px-4 py-2 hover:bg-red-50 text-red-600"><i class="fa-regular fa-trash-can w-5"></i> Delete for everyone</button>' : '';
 
     const dropdownMenu = `
       <div class="relative opacity-0 group-hover:opacity-100 transition-opacity flex items-center px-2">
@@ -563,25 +604,46 @@
           <button onclick="replyMessage('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-solid fa-reply w-5 text-slate-400"></i> Reply</button>
           <button onclick="copyText('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-regular fa-copy w-5 text-slate-400"></i> Copy Text</button>
           <button onclick="openForwardModal('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-solid fa-share w-5 text-slate-400"></i> Forward</button>
-          ${isMe ? `<button onclick="startEdit('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-solid fa-pen w-5 text-slate-400"></i> Edit</button>` : ''}
+          ${editBtn}
           <div class="border-t border-slate-100 my-1"></div>
           <button onclick="deleteForMe('${docId}')" class="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"><i class="fa-regular fa-eye-slash w-5 text-slate-400"></i> Delete for me</button>
-          ${isMe ? `<button onclick="deleteForEveryone('${docId}')" class="w-full text-left px-4 py-2 hover:bg-red-50 text-red-600"><i class="fa-regular fa-trash-can w-5"></i> Delete for everyone</button>` : ''}
+          ${deleteEveryoneBtn}
         </div>
       </div>
     `;
 
+    // Determine media HTML
+    let mediaHtml = '';
+    if (m.fileUrl) {
+      if (m.fileType && m.fileType.startsWith('image/')) {
+        mediaHtml = `<img src="${m.fileUrl}" class="max-w-[250px] rounded-lg mt-2 cursor-pointer shadow-sm border ${isMe ? 'border-indigo-400' : 'border-slate-200'}" alt="attachment" loading="lazy">`;
+      } else {
+        mediaHtml = `<a href="${m.fileUrl}" target="_blank" class="flex items-center gap-2 p-3 mt-2 rounded-lg bg-black/10 hover:bg-black/20 transition-colors ${isMe ? 'text-white' : 'text-slate-700'} text-sm font-medium">
+          <i class="fa-solid fa-file-arrow-down text-lg"></i>
+          <span class="truncate max-w-[150px]">${m.fileName || 'Download File'}</span>
+        </a>`;
+      }
+    }
+
+    // Extracted out logic to keep HTML clean
+    const nicknameHtml = !isMe ? `<span class="text-xs font-semibold text-slate-600">${m.nickname}</span>` : '';
+    const editedHtml = m.isEdited ? '(edited)' : '';
+    const bubbleAlignment = isMe ? 'flex-row-reverse' : 'flex-row';
+    const bubbleColor = isMe 
+      ? 'bg-gradient-to-br from-indigo-500 to-indigo-600 text-white rounded-2xl rounded-tr-sm' 
+      : 'bg-white text-slate-700 rounded-2xl rounded-tl-sm border border-slate-200/60';
+
     existingDiv.innerHTML = `
       <div class="max-w-[75%] flex flex-col ${isMe ? 'items-end' : 'items-start'}">
         <div class="flex items-baseline gap-2 mb-1 px-1">
-          ${!isMe ? `<span class="text-xs font-semibold text-slate-600">${m.nickname}</span>` : ''}
-          <span class="text-[10px] font-medium text-slate-400">${timeString} ${m.isEdited ? '(edited)' : ''}</span>
+          ${nicknameHtml}
+          <span class="text-[10px] font-medium text-slate-400">${timeString} ${editedHtml}</span>
         </div>
-        <div class="flex items-center ${isMe ? 'flex-row-reverse' : 'flex-row'}">
-          <div class="px-4 py-2.5 shadow-sm relative group-hover:shadow-md transition-shadow 
-            ${isMe ? 'bg-gradient-to-br from-indigo-500 to-indigo-600 text-white rounded-2xl rounded-tr-sm' : 'bg-white text-slate-700 rounded-2xl rounded-tl-sm border border-slate-200/60'}">
+        <div class="flex items-center ${bubbleAlignment}">
+          <div class="px-4 py-2.5 shadow-sm relative group-hover:shadow-md transition-shadow ${bubbleColor}">
             ${replyHtml}
             <p class="text-[14.5px] leading-relaxed whitespace-pre-wrap">${m.text}</p>
+            ${mediaHtml}
           </div>
           ${dropdownMenu}
         </div>
@@ -628,6 +690,55 @@
       alert("Action failed: " + err.message);
     }
   };
+
+ // --- FILE UPLOADS ---
+document.getElementById('fileUpload').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const storageRef = ref(storage, `rooms/${currentRoomId}/uploads/${Date.now()}_${file.name}`);
+  const uploadTask = uploadBytesResumable(storageRef, file);
+
+  const progressContainer = document.getElementById('uploadProgressContainer');
+  const progressBar = document.getElementById('uploadProgressBar');
+  const progressText = document.getElementById('uploadPercentage');
+
+  progressContainer.classList.remove('hidden');
+
+  uploadTask.on('state_changed', 
+    (snapshot) => {
+      const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+      progressBar.style.width = progress + '%';
+      progressText.textContent = Math.round(progress) + '%';
+    }, 
+    (error) => {
+      alert("Upload failed: " + error.message);
+      progressContainer.classList.add('hidden');
+      e.target.value = ''; // Reset input
+    }, 
+    async () => {
+      // Upload successful, get URL and send message
+      const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+      progressContainer.classList.add('hidden');
+      e.target.value = ''; 
+      
+      try {
+        await addDoc(collection(db, "rooms", currentRoomId, "messages"), {
+          uid: auth.currentUser.uid,
+          nickname: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
+          text: `Sent a file: ${file.name}`, // Fallback text
+          fileUrl: downloadURL,
+          fileName: file.name,
+          fileType: file.type,
+          time: serverTimestamp()
+        });
+        setTimeout(() => document.getElementById('messageBox').scrollTop = document.getElementById('messageBox').scrollHeight, 100);
+      } catch (err) {
+        alert("Failed to send message: " + err.message);
+      }
+    }
+  );
+});
 </script>
 </body>
 </html>
