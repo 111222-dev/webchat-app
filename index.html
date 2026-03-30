@@ -221,6 +221,12 @@
       document.getElementById('app').classList.remove('hidden');
       document.getElementById('userName').textContent = u.displayName || u.email.split('@')[0];
       document.getElementById('userInitial').textContent = (u.displayName || u.email).charAt(0).toUpperCase();
+      
+      // 🔥 NEW: Ask for Chrome Notification Permission
+      if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission();
+      }
+
       loadRooms();
       switchRoom('general', 'general', 'public');
     } else {
@@ -389,6 +395,8 @@
     box.innerHTML = '';
     window.loadedMessages = {};
 
+    let isFirstLoad = true; // 🔥 Track the first load
+    
     const q = query(collection(db, "rooms", roomId, "messages"), orderBy("time", "asc"));
     messageSub = onSnapshot(q, snap => {
       snap.docChanges().forEach(change => {
@@ -399,6 +407,22 @@
           window.loadedMessages[docId] = m;
           if (locallyHiddenMessages.has(docId)) return;
           renderOrUpdateMessage(docId, m);
+
+          // 🔥 NEW: Send Notification
+          // Only notify if it's a newly ADDED message, not the first load, and not sent by you
+          if (change.type === "added" && !isFirstLoad && m.uid !== auth.currentUser.uid) {
+            if ("Notification" in window && Notification.permission === "granted") {
+              // Create the system notification
+              const notification = new Notification(`Nexus Chat: ${roomName}`, {
+                body: `${m.nickname}: ${m.text}`,
+                icon: "https://cdn-icons-png.flaticon.com/512/1041/1041916.png" // Generic chat icon
+              });
+              
+              // Optional: Auto-close the notification after 5 seconds
+              setTimeout(() => notification.close(), 5000);
+            }
+          }
+
         }
         if (change.type === "removed") {
           delete window.loadedMessages[docId];
@@ -406,6 +430,8 @@
           if(el) el.remove();
         }
       });
+      
+      isFirstLoad = false; // 🔥 Mark first load as complete
       box.scrollTop = box.scrollHeight;
     });
   }
