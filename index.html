@@ -186,6 +186,11 @@
   </div>
 </div>
 
+<div id="imagePreviewModal" class="fixed inset-0 bg-slate-900/90 backdrop-blur-sm flex items-center justify-center z-[80] hidden" onclick="closeImagePreview()">
+  <button class="absolute top-6 right-6 text-slate-300 hover:text-white text-3xl transition-colors"><i class="fa-solid fa-xmark"></i></button>
+  <img id="previewImage" src="" class="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl transition-transform transform scale-95" onclick="event.stopPropagation()">
+</div>
+
 <div id="app" class="flex h-screen hidden">
   <aside class="w-80 bg-[#111827] text-white flex flex-col border-r border-slate-800 shadow-xl z-20">
     <div class="h-16 px-6 border-b border-slate-800 flex justify-between items-center bg-[#1f2937]">
@@ -217,19 +222,48 @@
     <p id="userPresence" class="text-[11px] font-medium text-emerald-400 uppercase flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Online</p>
   </div>
   <button onclick="openSettingsModal()" class="text-slate-400 hover:text-white transition p-2"><i class="fa-solid fa-gear"></i></button>
+
+  <aside id="mediaSidebar" class="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 shadow-xl flex flex-col hidden z-20 transition-all duration-300">
+    <div class="h-16 px-6 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-900">
+      <h3 class="font-bold text-slate-800 dark:text-white"><i class="fa-solid fa-photo-film mr-2 text-indigo-500"></i> Channel Media</h3>
+      <button onclick="toggleMediaSidebar()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <div id="mediaList" class="p-4 flex-1 overflow-y-auto grid grid-cols-2 gap-3 content-start bg-slate-50/50 dark:bg-slate-800">
+      </div>
+  </aside>
+
 </div>
   </aside>
 
   <main class="flex-1 flex flex-col relative bg-white">
     <header class="h-16 bg-white/90 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-8 shadow-sm z-10 absolute top-0 w-full">
-      <div class="flex items-center gap-3">
-        <i id="roomTypeIcon" class="fa-solid fa-hashtag text-slate-400 text-lg"></i>
-        <h2 id="currentRoomName" class="font-bold text-xl text-slate-800">Select a Room</h2>
+      
+      <div class="flex items-center gap-5">
+        <div class="flex items-center gap-3">
+          <i id="roomTypeIcon" class="fa-solid fa-hashtag text-slate-400 text-lg"></i>
+          <h2 id="currentRoomName" class="font-bold text-xl text-slate-800">Select a Room</h2>
+        </div>
+        
+        <div class="h-6 w-px bg-slate-200"></div> <button id="toggleMediaBtn" onclick="toggleMediaDropdown(event)" class="flex items-center gap-2 px-3 py-1.5 bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 rounded-full text-sm font-semibold transition-all shadow-sm border border-slate-200 hover:border-indigo-200">
+          <i class="fa-solid fa-images"></i> Media Gallery
+        </button>
       </div>
+
       <button id="deleteRoomBtn" onclick="deleteCurrentRoom()" class="hidden text-slate-400 hover:text-red-500 transition-colors p-2 rounded-lg hover:bg-red-50" title="Delete Channel">
         <i class="fa-solid fa-trash-can text-lg"></i>
       </button>
     </header>
+
+    <div id="mediaDropdown" class="absolute top-20 left-8 w-80 sm:w-96 bg-white/95 backdrop-blur-xl border border-slate-200 shadow-2xl rounded-2xl hidden z-50 flex flex-col max-h-[60vh] transform transition-all duration-300 origin-top-left">
+      <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/80 rounded-t-2xl">
+        <h3 class="font-bold text-slate-800 flex items-center gap-2">
+          <i class="fa-solid fa-photo-film text-indigo-500"></i> Shared Files
+        </h3>
+        <button onclick="toggleMediaDropdown()" class="text-slate-400 hover:text-red-500 transition-colors rounded-full p-1 hover:bg-red-50"><i class="fa-solid fa-xmark text-lg"></i></button>
+      </div>
+      <div id="mediaDropdownList" class="p-4 overflow-y-auto grid grid-cols-3 gap-3 content-start">
+        </div>
+    </div>
 
     <div id="messageBox" class="message-container chat-bg overflow-y-auto p-8 flex flex-col gap-6 mt-16 scroll-smooth"></div>
 
@@ -628,6 +662,8 @@ window.closeModals = () => {
           if (locallyHiddenMessages.has(docId)) return;
           renderOrUpdateMessage(docId, m);
 
+          if (!document.getElementById('mediaSidebar').classList.contains('hidden')) { renderMediaSidebar(); }
+
           if (change.type === "added" && !isFirstLoadBatch && m.uid !== auth.currentUser.uid && !appSettings.muted) {
             if ("Notification" in window && Notification.permission === "granted") {
               const notification = new Notification(`Nexus Chat: ${roomName}`, {
@@ -790,23 +826,43 @@ function renderOrUpdateMessage(docId, m) {
     // --- NEW SEPARATOR INJECTION ---
     if (isNew) {
       const mTime = m.time ? m.time.toMillis() : Date.now();
+      
       // Inject Unread divider if it's the first message found past the entry time and it isn't ours
       if (!firstUnreadFound && mTime > currentRoomEntryTime && !isMe) {
         firstUnreadFound = true;
         const sep = document.createElement('div');
         sep.id = 'unread-separator';
         sep.className = 'w-full flex items-center my-6 z-10 px-4';
+        sep.dataset.time = mTime - 1; // Ensure it sorts right before the unread message
         sep.innerHTML = `
           <div class="flex-1 border-t border-red-200 dark:border-red-900/50"></div>
           <span class="px-4 py-1 text-[11px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest bg-red-50 dark:bg-red-900/30 rounded-full mx-4 border border-red-100 dark:border-red-900/50 shadow-sm">New Messages</span>
           <div class="flex-1 border-t border-red-200 dark:border-red-900/50"></div>
         `;
-        box.appendChild(sep);
+        
+        // Chronological insertion for separator
+        const children = Array.from(box.children).filter(c => c.dataset && c.dataset.time);
+        const nextNode = children.find(c => Number(c.dataset.time) > (mTime - 1));
+        if (nextNode) {
+          box.insertBefore(sep, nextNode);
+        } else {
+          box.appendChild(sep);
+        }
       }
 
       existingDiv = document.createElement('div');
       existingDiv.id = `msg-${docId}`;
-      box.appendChild(existingDiv);
+      existingDiv.dataset.time = mTime; // Store timestamp for sorting
+      
+      // Chronological insertion for the message instead of just appending
+      const children = Array.from(box.children).filter(c => c.dataset && c.dataset.time);
+      const nextNode = children.find(c => Number(c.dataset.time) > mTime);
+      
+      if (nextNode) {
+        box.insertBefore(existingDiv, nextNode);
+      } else {
+        box.appendChild(existingDiv);
+      }
     }
     
     existingDiv.className = `flex group w-full transition-all duration-200 relative ${isMe ? 'justify-end' : 'justify-start'}`;
@@ -840,7 +896,7 @@ function renderOrUpdateMessage(docId, m) {
     if (m.fileUrl) {
       const isImage = !m.fileType || m.fileType.startsWith('image/');
       if (isImage) {
-        mediaHtml = `<img src="${m.fileUrl}" class="max-w-[250px] mt-2 rounded-lg shadow-sm border ${isMe ? 'border-indigo-400' : 'border-slate-200'}" alt="Attached Media" loading="lazy">`;
+        mediaHtml = `<img src="${m.fileUrl}" class="max-w-[250px] mt-2 rounded-lg shadow-sm border cursor-pointer hover:opacity-90 transition-opacity ${isMe ? 'border-indigo-400' : 'border-slate-200'}" alt="Attached Media" loading="lazy" onclick="openImagePreview('${m.fileUrl}')">`;
       } else {
         mediaHtml = `
           <a href="${m.fileUrl}" target="_blank" class="flex items-center gap-3 mt-2 p-2.5 bg-black/5 rounded-lg border border-black/10 hover:bg-black/10 transition-colors no-underline">
@@ -1034,15 +1090,15 @@ window.viewPublicProfile = async (uid) => {
   } catch (err) { console.error(err); }
 };
 
-// --- AUTO-HIDE UNREAD SEPARATOR ON SCROLL DOWN ---
+// --- AUTO-HIDE UNREAD SEPARATOR WHEN SCROLLED TO BOTTOM ---
 const msgBox = document.getElementById('messageBox');
-let lastScrollTop = 0;
 
 msgBox.addEventListener('scroll', function() {
-  let currentScroll = this.scrollTop;
+  // Check if the scroll position + the visible height equals the total scrollable height.
+  // We use a 10px threshold to ensure it triggers smoothly even with fractional pixel rendering.
+  const isAtBottom = this.scrollTop + this.clientHeight >= this.scrollHeight - 10;
   
-  // Check if the user is scrolling DOWN (added a 10px threshold to prevent accidental triggers)
-  if (currentScroll > lastScrollTop + 10) { 
+  if (isAtBottom) { 
     const separator = document.getElementById('unread-separator');
     
     if (separator) {
@@ -1062,10 +1118,95 @@ msgBox.addEventListener('scroll', function() {
       }, 300);
     }
   }
-  
-  // Update the last scroll position
-  lastScrollTop = currentScroll <= 0 ? 0 : currentScroll;
 });
+
+// --- MEDIA POPUP & PREVIEW LOGIC ---
+
+  window.toggleMediaDropdown = (e) => {
+    if(e) e.stopPropagation();
+    const dropdown = document.getElementById('mediaDropdown');
+    dropdown.classList.toggle('hidden');
+    if (!dropdown.classList.contains('hidden')) {
+      renderMediaDropdown();
+    }
+  };
+
+  // Close dropdown if user clicks outside of it
+  document.addEventListener('click', (e) => {
+    const dropdown = document.getElementById('mediaDropdown');
+    const toggleBtn = document.getElementById('toggleMediaBtn');
+    if (dropdown && !dropdown.classList.contains('hidden') && !dropdown.contains(e.target) && !toggleBtn.contains(e.target)) {
+      dropdown.classList.add('hidden');
+    }
+  });
+
+  window.renderMediaDropdown = () => {
+    const container = document.getElementById('mediaDropdownList');
+    if (!container) return;
+    container.innerHTML = '';
+    
+    // Sort messages newest first
+    const messages = Object.values(window.loadedMessages).sort((a, b) => {
+       const tA = a.time ? a.time.toMillis() : 0;
+       const tB = b.time ? b.time.toMillis() : 0;
+       return tB - tA; 
+    });
+
+    const fileMessages = messages.filter(m => m.fileUrl);
+
+    if (fileMessages.length === 0) {
+      container.innerHTML = `
+        <div class="col-span-3 text-center py-10 flex flex-col items-center">
+          <div class="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-3">
+            <i class="fa-solid fa-folder-open text-2xl text-slate-400"></i>
+          </div>
+          <p class="text-sm font-semibold text-slate-500">No media yet</p>
+          <p class="text-xs text-slate-400 mt-1">Files shared here will appear in this gallery.</p>
+        </div>`;
+      return;
+    }
+
+    fileMessages.forEach(m => {
+      const isImage = !m.fileType || m.fileType.startsWith('image/');
+      const el = document.createElement('div');
+      
+      if (isImage) {
+        el.className = 'aspect-square rounded-xl overflow-hidden border border-slate-200 shadow-sm cursor-pointer hover:shadow-lg hover:border-indigo-400 hover:-translate-y-1 transition-all relative group';
+        el.innerHTML = `
+          <img src="${m.fileUrl}" class="w-full h-full object-cover">
+          <div class="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center pb-2 text-white">
+            <i class="fa-solid fa-magnifying-glass-plus"></i>
+          </div>
+        `;
+        el.onclick = () => window.openImagePreview(m.fileUrl);
+      } else {
+        el.className = 'aspect-square rounded-xl overflow-hidden border border-slate-200 shadow-sm cursor-pointer hover:shadow-lg hover:border-indigo-400 hover:-translate-y-1 transition-all relative group bg-slate-50 flex flex-col items-center justify-center text-center p-2';
+        el.innerHTML = `
+          <i class="fa-solid fa-file-lines text-3xl text-indigo-400 mb-2"></i>
+          <p class="text-[10px] font-semibold text-slate-600 w-full truncate px-1">${m.fileName || 'Document'}</p>
+        `;
+        el.onclick = () => window.open(m.fileUrl, '_blank');
+      }
+      container.appendChild(el);
+    });
+  };
+
+  window.openImagePreview = (url) => {
+    const img = document.getElementById('previewImage');
+    img.src = url;
+    document.getElementById('imagePreviewModal').classList.remove('hidden');
+    setTimeout(() => img.classList.replace('scale-95', 'scale-100'), 10);
+  };
+
+  window.closeImagePreview = () => {
+    const img = document.getElementById('previewImage');
+    img.classList.replace('scale-100', 'scale-95');
+    setTimeout(() => {
+      document.getElementById('imagePreviewModal').classList.add('hidden');
+      img.src = '';
+    }, 200); 
+  };
+   
 </script>
 </body>
 </html>
