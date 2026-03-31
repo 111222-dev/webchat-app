@@ -348,6 +348,7 @@ window.closeModals = () => {
   window.loadedMessages = {}; 
   let actionState = { type: null, docId: null }; 
   let pendingInvites = new Set();
+  window.userProfilesCache = {};
 
   let userLastRead = {};           // Local map of {roomId: timestamp_ms}
   let unreadListeners = {};        // Firestore listeners per room
@@ -871,7 +872,7 @@ function renderOrUpdateMessage(docId, m) {
     if(m.replyTo) {
       replyHtml = `
         <div class="mb-1 bg-slate-100/50 rounded-lg p-2 border-l-4 border-indigo-400 text-xs text-slate-500 truncate max-w-[200px]">
-          <span class="font-bold">${m.replyTo.nickname}</span>: ${m.replyTo.text}
+          <span class="font-bold ${m.replyTo.uid ? `msg-author-${m.replyTo.uid}` : ''}">${m.replyTo.nickname}</span>: ${m.replyTo.text}
         </div>`;
     }
 
@@ -914,7 +915,7 @@ function renderOrUpdateMessage(docId, m) {
     existingDiv.innerHTML = `
       <div class="max-w-[75%] flex flex-col ${isMe ? 'items-end' : 'items-start'}">
         <div class="flex items-baseline gap-2 mb-1 px-1">
-          ${!isMe ? `<span class="text-xs font-semibold text-slate-600 cursor-pointer hover:text-indigo-600 hover:underline transition-colors" onclick="viewPublicProfile('${m.uid}')">${m.nickname}</span>` : ''}
+          ${!isMe ? `<span class="text-xs font-semibold text-slate-600 cursor-pointer hover:text-indigo-600 hover:underline transition-colors msg-author-${m.uid}" onclick="viewPublicProfile('${m.uid}')">${m.nickname}</span>` : ''}
           <span class="text-[10px] font-medium text-slate-400">${timeString} ${m.isEdited ? '(edited)' : ''}</span>
         </div>
         <div class="flex items-center ${isMe ? 'flex-row-reverse' : 'flex-row'}">
@@ -929,6 +930,32 @@ function renderOrUpdateMessage(docId, m) {
       </div>`;
       
       window.replyMessage = window.startReply;
+      
+      // --- DYNAMIC NICKNAME UPDATER ---
+      const uidsToFetch = [];
+      if (!isMe) uidsToFetch.push(m.uid);
+      if (m.replyTo && m.replyTo.uid) uidsToFetch.push(m.replyTo.uid);
+
+      uidsToFetch.forEach(uid => {
+        if (window.userProfilesCache[uid]) {
+          const freshName = window.userProfilesCache[uid].nickname;
+          if (freshName) {
+            document.querySelectorAll(`.msg-author-${uid}`).forEach(el => el.textContent = freshName);
+          }
+        } else {
+          window.userProfilesCache[uid] = { pending: true }; // Prevent redundant fetches
+          getDoc(doc(db, "users", uid)).then(snap => {
+            if (snap.exists()) {
+              window.userProfilesCache[uid] = snap.data();
+              const freshName = window.userProfilesCache[uid].nickname;
+              if (freshName) {
+                // Instantly update ALL text bubbles from this user in the DOM
+                document.querySelectorAll(`.msg-author-${uid}`).forEach(el => el.textContent = freshName);
+              }
+            }
+          }).catch(e => console.error(e));
+        }
+      });
   }
   
   // --- SUBMIT MESSAGE ---
@@ -955,7 +982,9 @@ function renderOrUpdateMessage(docId, m) {
         if (currentActionType === 'reply') {
           const originalMsg = window.loadedMessages[currentActionDocId];
           payload.replyTo = {
-            id: currentActionDocId, nickname: originalMsg.nickname,
+            id: currentActionDocId, 
+            uid: originalMsg.uid, // <-- ADD THIS LINE
+            nickname: originalMsg.nickname,
             text: originalMsg.text.substring(0, 50) + (originalMsg.text.length > 50 ? '...' : '')
           };
         }
@@ -1064,13 +1093,35 @@ document.getElementById('profileForm').onsubmit = async (e) => {
   
   try {
     const newName = document.getElementById('profileName').value;
+    
+    // --- FIX: Regenerate default avatar with the new nickname ---
+    let finalAvatarUrl = currentAvatarUrl;
+    if (finalAvatarUrl.includes("ui-avatars.com")) {
+      finalAvatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(newName)}&background=6366f1&color=fff`;
+    }
+
     await updateDoc(doc(db, "users", auth.currentUser.uid), {
-      nickname: newName, status: document.getElementById('profileStatus').value,
-      bio: document.getElementById('profileBio').value, avatarUrl: currentAvatarUrl
+      nickname: newName, 
+      status: document.getElementById('profileStatus').value,
+      bio: document.getElementById('profileBio').value, 
+      // If it's a default UI avatar, save an empty string so the app 
+      // is forced to auto-generate a fresh one on next reload.
+      // If it's a custom Cloudinary upload, save the real URL.
+      avatarUrl: finalAvatarUrl.includes("ui-avatars.com") ? "" : finalAvatarUrl
     });
     
+    // Update Sidebar UI
     document.getElementById('userName').textContent = newName;
-    document.getElementById('sidebarAvatar').src = currentAvatarUrl;
+    document.getElementById('sidebarAvatar').src = finalAvatarUrl;
+    currentAvatarUrl = finalAvatarUrl;
+
+    // Update Text Bubbles Instantly (from the previous fix)
+    if (window.userProfilesCache) {
+      window.userProfilesCache[auth.currentUser.uid] = window.userProfilesCache[auth.currentUser.uid] || {};
+      window.userProfilesCache[auth.currentUser.uid].nickname = newName;
+      document.querySelectorAll(`.msg-author-${auth.currentUser.uid}`).forEach(el => el.textContent = newName);
+    }
+
     closeModals();
   } catch (err) { alert(err.message); } 
   finally { btn.innerHTML = 'Save Changes'; }
