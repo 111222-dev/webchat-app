@@ -269,7 +269,7 @@
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
-  import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, setDoc, deleteDoc, updateDoc, getDocs, where, getDoc } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
+  import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, setDoc, deleteDoc, updateDoc, getDocs, where, getDoc, limit } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
   import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
   import { getDatabase, ref, onValue, set, onDisconnect, serverTimestamp as rtdbTimestamp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-database.js";
 
@@ -288,7 +288,6 @@ let appSettings = JSON.parse(localStorage.getItem('nexusSettings')) || {
   muted: false
 };
 
-// Apply saved theme immediately
 if (appSettings.theme === 'dark') {
   document.documentElement.classList.add('dark');
   document.getElementById('themeToggle').checked = true;
@@ -296,7 +295,6 @@ if (appSettings.theme === 'dark') {
 document.getElementById('sendModeToggle').checked = appSettings.requireShiftEnter;
 document.getElementById('muteToggle').checked = appSettings.muted;
 
-// Global Modals Helper
 window.closeModals = () => {
   document.getElementById('profileModal').classList.add('hidden');
   document.getElementById('publicProfileModal').classList.add('hidden');
@@ -311,13 +309,17 @@ window.closeModals = () => {
   let messageSub = null;
   let availableRooms = [];
   
-  // App State
+  // App & Read/Unread State Tracking
   const locallyHiddenMessages = new Set();
   window.loadedMessages = {}; 
   let actionState = { type: null, docId: null }; 
-  
-  // Room Creation State
   let pendingInvites = new Set();
+
+  let userLastRead = {};           // Local map of {roomId: timestamp_ms}
+  let unreadListeners = {};        // Firestore listeners per room
+  let unreadCounts = {};           // Local map of {roomId: count}
+  let currentRoomEntryTime = 0;    // Time user opened current room
+  let firstUnreadFound = false;    // Tracks if separator was injected
 
   // --- UI TOGGLES (Auth) ---
   const toggleBtn = document.getElementById('toggleAuthMode');
@@ -338,7 +340,8 @@ window.closeModals = () => {
       if (isSignUpMode) {
         const userCred = await createUserWithEmailAndPassword(auth, email, password);
         await updateProfile(userCred.user, { displayName: name });
-        await setDoc(doc(db, "users", userCred.user.uid), { nickname: name, email: email, createdAt: serverTimestamp() });
+        // Initialize read states for new accounts
+        await setDoc(doc(db, "users", userCred.user.uid), { nickname: name, email: email, lastRead: {}, createdAt: serverTimestamp() });
       } else {
         await signInWithEmailAndPassword(auth, email, password);
       }
@@ -352,9 +355,10 @@ window.closeModals = () => {
     document.getElementById('authOverlay').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
     
-    // Fetch User Profile
+    // Fetch User Profile & Read States
     const userDoc = await getDoc(doc(db, "users", u.uid));
     const userData = userDoc.exists() ? userDoc.data() : {};
+    userLastRead = userData.lastRead || {};
     
     const displayAvatar = userData.avatarUrl || `https://ui-avatars.com/api/?name=${u.displayName || u.email}&background=6366f1&color=fff`;
     document.getElementById('userName').textContent = userData.nickname || u.displayName || u.email.split('@')[0];
@@ -378,6 +382,10 @@ window.closeModals = () => {
   } else {
     document.getElementById('authOverlay').classList.remove('hidden');
     document.getElementById('app').classList.add('hidden');
+    
+    // Cleanup listeners on logout
+    for(const key in unreadListeners) { unreadListeners[key](); }
+    unreadListeners = {}; unreadCounts = {};
   }
 });
 
@@ -394,11 +402,7 @@ window.closeModals = () => {
 
   document.getElementById('newRoomType').addEventListener('change', (e) => {
     const inviteSection = document.getElementById('inviteMembersSection');
-    if (e.target.value === 'private') {
-      inviteSection.classList.remove('hidden');
-    } else {
-      inviteSection.classList.add('hidden');
-    }
+    e.target.value === 'private' ? inviteSection.classList.remove('hidden') : inviteSection.classList.add('hidden');
   });
 
   window.addEmailToInvite = () => {
@@ -439,65 +443,43 @@ window.closeModals = () => {
       const type = document.getElementById('newRoomType').value;
       let members = [];
 
-      // If private, resolve emails to UIDs
       if (type === 'private') {
-        
-        // 🔥 FIX 2: Automatically add any email they typed but forgot to click "Add" for
         const leftoverEmail = document.getElementById('inviteEmailInput').value.trim().toLowerCase();
-        if (leftoverEmail && leftoverEmail !== auth.currentUser.email) {
-          pendingInvites.add(leftoverEmail);
-        }
+        if (leftoverEmail && leftoverEmail !== auth.currentUser.email) pendingInvites.add(leftoverEmail);
 
-        // 🔥 FIX 3: Prevent creating a private room with no one else in it
         if (pendingInvites.size === 0) {
           alert("You must invite at least one person to create a private channel.");
-          btn.innerHTML = 'Create Channel';
-          btn.disabled = false;
+          btn.innerHTML = 'Create Channel'; btn.disabled = false;
           return;
         }
 
-        members.push(auth.currentUser.uid); // Creator is always a member
+        members.push(auth.currentUser.uid); 
         
         for (let email of pendingInvites) {
           const q = query(collection(db, "users"), where("email", "==", email));
           const snap = await getDocs(q);
-          
-          if (!snap.empty) {
-            members.push(snap.docs[0].id);
-          } else {
-            alert(`Could not find user: ${email}. They must create an account first.`);
-            btn.innerHTML = 'Create Channel';
-            btn.disabled = false;
-            return; // Stop creation entirely if a user isn't found
-          }
+          if (!snap.empty) members.push(snap.docs[0].id);
+          else return alert(`Could not find user: ${email}. They must create an account first.`);
         }
       }
 
       await addDoc(collection(db, "rooms"), {
-        name: name,
-        type: type,
-        members: members,
-        createdBy: auth.currentUser.uid,
-        createdAt: serverTimestamp()
+        name: name, type: type, members: members,
+        createdBy: auth.currentUser.uid, createdAt: serverTimestamp()
       });
 
       closeCreateRoomModal();
-    } catch(err) {
-      alert("Error creating room: " + err.message);
-    } finally {
-      btn.innerHTML = 'Create Channel';
-      btn.disabled = false;
-    }
+    } catch(err) { alert("Error creating room: " + err.message); } 
+    finally { btn.innerHTML = 'Create Channel'; btn.disabled = false; }
   };
 
-  // --- ROOMS ---
+  // --- ROOMS & UNREAD TRACKING ---
   function loadRooms() {
     onSnapshot(collection(db, "rooms"), snap => {
       const container = document.getElementById('roomsList');
       container.innerHTML = '';
       availableRooms = [];
       
-      // ALWAYS render the General room at the top
       availableRooms.push({id: 'general', name: 'General Chat'});
       renderRoomTab('general', 'General Chat', 'public', null);
 
@@ -505,16 +487,17 @@ window.closeModals = () => {
         const data = room.data();
         if (room.id === 'general') return;
         
-        // PRIVACY FILTER
         if (data.type === 'public' || (data.members && data.members.includes(auth.currentUser.uid))) {
           availableRooms.push({id: room.id, name: data.name || room.id});
-          // Pass 'createdBy' to the render function
           renderRoomTab(room.id, data.name || room.id, data.type || 'public', data.createdBy);
         }
       });
       
       const activeTab = document.getElementById(`tab-${currentRoomId}`);
-      if(activeTab) activeTab.classList.add('bg-indigo-600/20', 'text-indigo-400');
+      if(activeTab) {
+        activeTab.classList.remove('text-slate-100', 'text-slate-400', 'bg-slate-800', 'hover:bg-[#1f2937]');
+        activeTab.classList.add('bg-indigo-600/20', 'text-indigo-400', 'font-bold');
+      }
     });
   }
 
@@ -525,12 +508,70 @@ window.closeModals = () => {
     
     const icon = type === 'private' ? 'fa-lock text-[11px]' : 'fa-hashtag';
     
-    div.className = `flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all duration-200 mb-1 group font-medium text-sm hover:bg-[#1f2937] text-slate-400 hover:text-slate-200`;
-    div.innerHTML = `<i class="fa-solid ${icon} opacity-70 group-hover:text-slate-200 w-4 text-center"></i> <span class="truncate">${name}</span>`;
+    div.className = `flex items-center px-3 py-2.5 rounded-xl cursor-pointer transition-all duration-200 mb-1 group font-medium text-sm hover:bg-[#1f2937] text-slate-400 hover:text-slate-200`;
+    div.innerHTML = `
+      <i class="fa-solid ${icon} opacity-70 group-hover:text-slate-200 w-4 text-center mr-3"></i> 
+      <span class="truncate flex-1 room-name text-left">${name}</span>
+    `;
     
-    // Pass 'createdBy' to switchRoom
     div.onclick = () => switchRoom(id, name, type, createdBy);
     document.getElementById('roomsList').appendChild(div);
+
+    // Initialize Unread Tracking Listener for this Room
+    setupUnreadListener(id);
+  }
+
+  function setupUnreadListener(roomId) {
+    if (unreadListeners[roomId]) return;
+
+    // Listen to the last 100 messages to count unread messages without processing the entire history
+    const q = query(collection(db, "rooms", roomId, "messages"), orderBy("time", "desc"), limit(100));
+    unreadListeners[roomId] = onSnapshot(q, snap => {
+      let count = 0;
+      const lr = userLastRead[roomId] || 0;
+
+      snap.forEach(docSnap => {
+        const m = docSnap.data();
+        const t = m.time ? m.time.toMillis() : Date.now();
+        // Increment if message is newer than the user's last read time and wasn't sent by the user
+        if (t > lr && m.uid !== auth.currentUser.uid) count++;
+      });
+
+      unreadCounts[roomId] = count;
+      updateRoomTabBadge(roomId);
+      updateTotalUnread();
+    });
+  }
+
+  function updateRoomTabBadge(roomId) {
+    const tab = document.getElementById(`tab-${roomId}`);
+    if (!tab) return;
+    if (roomId === currentRoomId) return; // Active room styling overrides this logic
+
+    const count = unreadCounts[roomId] || 0;
+    let badge = document.getElementById(`badge-${roomId}`);
+
+    if (count > 0) {
+      // Create or update the red number badge, but DO NOT highlight the chat text/background
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.id = `badge-${roomId}`;
+        badge.className = 'ml-2 bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm';
+        tab.appendChild(badge);
+      }
+      badge.textContent = count > 99 ? '99+' : count;
+    } else {
+      // Remove the badge when read, leaving the normal tab styling intact
+      if (badge) badge.remove();
+    }
+  }
+
+  function updateTotalUnread() {
+    let total = 0;
+    for (const id in unreadCounts) {
+      if (id !== currentRoomId) total += unreadCounts[id];
+    }
+    document.title = total > 0 ? `(${total > 99 ? '99+' : total}) Nexus Chat | Premium` : 'Nexus Chat | Premium';
   }
 
   function switchRoom(roomId, roomName, type, createdBy) {
@@ -538,27 +579,44 @@ window.closeModals = () => {
     document.getElementById('currentRoomName').textContent = roomName;
     document.getElementById('roomTypeIcon').className = `fa-solid ${type === 'private' ? 'fa-lock' : 'fa-hashtag'} text-slate-400 text-lg`;
     
-    // 🔥 SHOW/HIDE DELETE BUTTON
     const deleteBtn = document.getElementById('deleteRoomBtn');
-    if (roomId !== 'general' && createdBy === auth.currentUser.uid) {
-      deleteBtn.classList.remove('hidden');
-    } else {
-      deleteBtn.classList.add('hidden'); // Hide if it's the general room or user is not the creator
-    }
-    
+    (roomId !== 'general' && createdBy === auth.currentUser.uid) ? deleteBtn.classList.remove('hidden') : deleteBtn.classList.add('hidden');
     window.cancelAction(); 
-    
-    document.querySelectorAll('#roomsList > div').forEach(el => el.classList.remove('bg-indigo-600/20', 'text-indigo-400'));
+
+    // --- NEW READ RECEIPTS LOGIC ---
+    currentRoomEntryTime = userLastRead[roomId] || 0;
+    firstUnreadFound = false;
+
+    // Immediately update read status locally & in database
+    userLastRead[roomId] = Date.now();
+    setDoc(doc(db, "users", auth.currentUser.uid), {
+      lastRead: { [roomId]: userLastRead[roomId] }
+    }, { merge: true }); // Merge ensures we only update the lastRead map and not overwrite profile data
+
+    unreadCounts[roomId] = 0; // Clear immediately for snappy UI
+    updateTotalUnread();
+
+    // Reset styles for all tabs, then highlight active
+    document.querySelectorAll('#roomsList > div').forEach(el => {
+      el.classList.remove('bg-indigo-600/20', 'text-indigo-400', 'font-bold');
+      const id = el.id.replace('tab-', '');
+      updateRoomTabBadge(id);
+    });
+
     const activeTab = document.getElementById(`tab-${roomId}`);
-    if(activeTab) activeTab.classList.add('bg-indigo-600/20', 'text-indigo-400');
+    if(activeTab) {
+      activeTab.classList.remove('text-slate-100', 'text-slate-400', 'bg-slate-800');
+      activeTab.classList.add('bg-indigo-600/20', 'text-indigo-400', 'font-bold');
+      const badge = document.getElementById(`badge-${roomId}`);
+      if(badge) badge.remove();
+    }
 
     if (messageSub) messageSub();
     const box = document.getElementById('messageBox');
     box.innerHTML = '';
     window.loadedMessages = {};
 
-    let isFirstLoad = true; // 🔥 Track the first load
-    
+    let isFirstLoadBatch = true;
     const q = query(collection(db, "rooms", roomId, "messages"), orderBy("time", "asc"));
     messageSub = onSnapshot(q, snap => {
       snap.docChanges().forEach(change => {
@@ -570,21 +628,15 @@ window.closeModals = () => {
           if (locallyHiddenMessages.has(docId)) return;
           renderOrUpdateMessage(docId, m);
 
-          // 🔥 NEW: Send Notification
-          // Only notify if it's a newly ADDED message, not the first load, and not sent by you
-          if (change.type === "added" && !isFirstLoad && m.uid !== auth.currentUser.uid) {
+          if (change.type === "added" && !isFirstLoadBatch && m.uid !== auth.currentUser.uid && !appSettings.muted) {
             if ("Notification" in window && Notification.permission === "granted") {
-              // Create the system notification
               const notification = new Notification(`Nexus Chat: ${roomName}`, {
                 body: `${m.nickname}: ${m.text}`,
-                icon: "https://cdn-icons-png.flaticon.com/512/1041/1041916.png" // Generic chat icon
+                icon: "https://cdn-icons-png.flaticon.com/512/1041/1041916.png" 
               });
-              
-              // Optional: Auto-close the notification after 5 seconds
               setTimeout(() => notification.close(), 5000);
             }
           }
-
         }
         if (change.type === "removed") {
           delete window.loadedMessages[docId];
@@ -593,79 +645,56 @@ window.closeModals = () => {
         }
       });
       
-      isFirstLoad = false; // 🔥 Mark first load as complete
-      box.scrollTop = box.scrollHeight;
+      // Auto-Scroll to Separator OR Bottom
+      if (isFirstLoadBatch) {
+        const sep = document.getElementById('unread-separator');
+        if (sep) {
+          setTimeout(() => sep.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+        } else {
+          box.scrollTop = box.scrollHeight;
+        }
+        isFirstLoadBatch = false; 
+      } else {
+        box.scrollTop = box.scrollHeight;
+      }
     });
   }
 
-  // 🔥 NEW: Delete Room Function
   window.deleteCurrentRoom = async () => {
     if (confirm("Are you sure you want to delete this channel? This action cannot be undone and will remove it for everyone.")) {
       try {
         await deleteDoc(doc(db, "rooms", currentRoomId));
-        // Instantly switch back to general chat
         switchRoom('general', 'General Chat', 'public', null);
-      } catch (err) {
-        alert("Failed to delete room: " + err.message);
-      }
+      } catch (err) { alert("Failed to delete room: " + err.message); }
     }
   };
 
   // --- MESSAGE ACTIONS (GLOBAL EXPORTS) ---
   window.toggleMenu = (e, id) => {
     e.stopPropagation();
-    
     const menu = document.getElementById(`menu-${id}`);
     const isCurrentlyHidden = menu.classList.contains('hidden');
-    
-    // Close all menus first so we don't have multiples open
     closeAllMenus(); 
-    
-    // Only proceed if we are trying to open the menu
     if (isCurrentlyHidden) {
-      // 1. Get the exact position of the 3-dots button on the screen
       const buttonRect = e.currentTarget.getBoundingClientRect();
-      
-      // 2. Check if there is enough space below the button (approx 240px for the menu)
       if (window.innerHeight - buttonRect.bottom < 240) {
-        // Not enough space: Open UPWARDS 
-        menu.classList.remove('top-8');
-        menu.classList.add('bottom-8');
+        menu.classList.remove('top-8'); menu.classList.add('bottom-8');
       } else {
-        // Plenty of space: Open DOWNWARDS (default)
-        menu.classList.remove('bottom-8');
-        menu.classList.add('top-8');
+        menu.classList.remove('bottom-8'); menu.classList.add('top-8');
       }
-      
-      // 3. Show the menu
       menu.classList.remove('hidden');
     }
   };
 
-  window.closeAllMenus = () => {
-    document.querySelectorAll('.msg-dropdown').forEach(m => m.classList.add('hidden'));
-  };
-
-  window.copyText = async (id) => {
-    await navigator.clipboard.writeText(window.loadedMessages[id].text);
-  };
-
-  window.deleteForMe = (id) => {
-    locallyHiddenMessages.add(id);
-    document.getElementById(`msg-${id}`).remove();
-  };
-
-  window.deleteForEveryone = async (id) => {
-    if(confirm("Permanently delete this message for everyone?")) {
-      await deleteDoc(doc(db, "rooms", currentRoomId, "messages", id));
-    }
-  };
+  window.closeAllMenus = () => document.querySelectorAll('.msg-dropdown').forEach(m => m.classList.add('hidden'));
+  window.copyText = async (id) => await navigator.clipboard.writeText(window.loadedMessages[id].text);
+  window.deleteForMe = (id) => { locallyHiddenMessages.add(id); document.getElementById(`msg-${id}`).remove(); };
+  window.deleteForEveryone = async (id) => { if(confirm("Permanently delete this message for everyone?")) await deleteDoc(doc(db, "rooms", currentRoomId, "messages", id)); };
 
   window.startEdit = (id) => {
     actionState = { type: 'edit', docId: id };
     document.getElementById('messageInput').value = window.loadedMessages[id].text;
     document.getElementById('messageInput').focus();
-    
     document.getElementById('actionBanner').classList.remove('hidden');
     document.getElementById('actionIcon').className = "fa-solid fa-pen";
     document.getElementById('actionText').textContent = "Editing message";
@@ -675,7 +704,6 @@ window.closeModals = () => {
     actionState = { type: 'reply', docId: id };
     const m = window.loadedMessages[id];
     document.getElementById('messageInput').focus();
-    
     document.getElementById('actionBanner').classList.remove('hidden');
     document.getElementById('actionIcon').className = "fa-solid fa-reply";
     document.getElementById('actionText').textContent = `Replying to ${m.nickname}: ${m.text}`;
@@ -684,10 +712,8 @@ window.closeModals = () => {
   window.cancelAction = () => {
     actionState = { type: null, docId: null };
     document.getElementById('actionBanner').classList.add('hidden');
-    
     const input = document.getElementById('messageInput');
-    input.value = '';
-    input.style.height = 'auto'; // 🔥 NEW: Shrink it back down!
+    input.value = ''; input.style.height = 'auto'; 
   };
     
   // --- FORWARDING ---
@@ -706,11 +732,9 @@ window.closeModals = () => {
           await addDoc(collection(db, "rooms", room.id, "messages"), {
             uid: auth.currentUser.uid,
             nickname: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
-            text: `[Forwarded]: ${text}`,
-            time: serverTimestamp()
+            text: `[Forwarded]: ${text}`, time: serverTimestamp()
           });
-          closeForwardModal();
-          alert(`Forwarded to ${room.name}`);
+          closeForwardModal(); alert(`Forwarded to ${room.name}`);
         } catch(e) { alert("Error forwarding message."); }
       };
       list.appendChild(btn);
@@ -722,58 +746,37 @@ window.closeModals = () => {
 
 // --- AUTO-EXPANDING TEXTAREA LOGIC ---
   const messageInput = document.getElementById('messageInput');
-
   messageInput.addEventListener('input', function() {
-    // 1. Reset height to auto to recalculate shrinking
-    this.style.height = 'auto';
-    // 2. Set the height to match the new scrollHeight
-    this.style.height = this.scrollHeight + 'px';
+    this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px';
   });
 
-  messageInput.addEventListener('keydown', function(e) {
-    // 3. If pressing Enter WITHOUT holding Shift, send the message
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault(); // Stop it from dropping to a new line
-      document.querySelector('#chatForm button[type="submit"]').click(); // Trigger form submission
-    }
-  });
-    
   window.openSettingsModal = () => document.getElementById('settingsModal').classList.remove('hidden');
 
-window.toggleTheme = () => {
-  appSettings.theme = document.getElementById('themeToggle').checked ? 'dark' : 'light';
-  document.documentElement.classList.toggle('dark', appSettings.theme === 'dark');
-  localStorage.setItem('nexusSettings', JSON.stringify(appSettings));
-};
+  window.toggleTheme = () => {
+    appSettings.theme = document.getElementById('themeToggle').checked ? 'dark' : 'light';
+    document.documentElement.classList.toggle('dark', appSettings.theme === 'dark');
+    localStorage.setItem('nexusSettings', JSON.stringify(appSettings));
+  };
 
-window.toggleSendMode = () => {
-  appSettings.requireShiftEnter = document.getElementById('sendModeToggle').checked;
-  localStorage.setItem('nexusSettings', JSON.stringify(appSettings));
-};
+  window.toggleSendMode = () => {
+    appSettings.requireShiftEnter = document.getElementById('sendModeToggle').checked;
+    localStorage.setItem('nexusSettings', JSON.stringify(appSettings));
+  };
 
-window.toggleMute = () => {
-  appSettings.muted = document.getElementById('muteToggle').checked;
-  localStorage.setItem('nexusSettings', JSON.stringify(appSettings));
-};
+  window.toggleMute = () => {
+    appSettings.muted = document.getElementById('muteToggle').checked;
+    localStorage.setItem('nexusSettings', JSON.stringify(appSettings));
+  };
 
-// UPDATE YOUR EXISTING EVENT LISTENER:
-messageInput.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') {
-    if (appSettings.requireShiftEnter) {
-      // If setting is ON, Enter adds a new line, Shift+Enter sends.
-      if (e.shiftKey) {
-        e.preventDefault();
-        document.querySelector('#chatForm button[type="submit"]').click();
-      }
-    } else {
-      // If setting is OFF (Default), Enter sends, Shift+Enter adds a line.
-      if (!e.shiftKey) {
-        e.preventDefault();
-        document.querySelector('#chatForm button[type="submit"]').click();
+  messageInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      if (appSettings.requireShiftEnter) {
+        if (e.shiftKey) { e.preventDefault(); document.querySelector('#chatForm button[type="submit"]').click(); }
+      } else {
+        if (!e.shiftKey) { e.preventDefault(); document.querySelector('#chatForm button[type="submit"]').click(); }
       }
     }
-  }
-});
+  });
 
   // --- RENDERING ---
 function renderOrUpdateMessage(docId, m) {
@@ -782,7 +785,25 @@ function renderOrUpdateMessage(docId, m) {
     let timeString = m.time ? m.time.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
     let existingDiv = document.getElementById(`msg-${docId}`);
-    if(!existingDiv) {
+    let isNew = !existingDiv;
+
+    // --- NEW SEPARATOR INJECTION ---
+    if (isNew) {
+      const mTime = m.time ? m.time.toMillis() : Date.now();
+      // Inject Unread divider if it's the first message found past the entry time and it isn't ours
+      if (!firstUnreadFound && mTime > currentRoomEntryTime && !isMe) {
+        firstUnreadFound = true;
+        const sep = document.createElement('div');
+        sep.id = 'unread-separator';
+        sep.className = 'w-full flex items-center my-6 z-10 px-4';
+        sep.innerHTML = `
+          <div class="flex-1 border-t border-red-200 dark:border-red-900/50"></div>
+          <span class="px-4 py-1 text-[11px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest bg-red-50 dark:bg-red-900/30 rounded-full mx-4 border border-red-100 dark:border-red-900/50 shadow-sm">New Messages</span>
+          <div class="flex-1 border-t border-red-200 dark:border-red-900/50"></div>
+        `;
+        box.appendChild(sep);
+      }
+
       existingDiv = document.createElement('div');
       existingDiv.id = `msg-${docId}`;
       box.appendChild(existingDiv);
@@ -815,17 +836,12 @@ function renderOrUpdateMessage(docId, m) {
       </div>
     `;
 
-    // 🔥 NEW: Check if there is a fileUrl (like a GIPHY link) and create an image tag
-    // Check if there is a fileUrl and render appropriately
     let mediaHtml = '';
     if (m.fileUrl) {
-      // If it's an image or GIF (fallback to true if fileType is missing for older msgs)
       const isImage = !m.fileType || m.fileType.startsWith('image/');
-      
       if (isImage) {
         mediaHtml = `<img src="${m.fileUrl}" class="max-w-[250px] mt-2 rounded-lg shadow-sm border ${isMe ? 'border-indigo-400' : 'border-slate-200'}" alt="Attached Media" loading="lazy">`;
       } else {
-        // If it's a generic file, render a download card
         mediaHtml = `
           <a href="${m.fileUrl}" target="_blank" class="flex items-center gap-3 mt-2 p-2.5 bg-black/5 rounded-lg border border-black/10 hover:bg-black/10 transition-colors no-underline">
             <i class="fa-solid fa-file-arrow-down text-xl ${isMe ? 'text-indigo-100' : 'text-indigo-500'}"></i>
@@ -834,8 +850,6 @@ function renderOrUpdateMessage(docId, m) {
       }
     }
 
-    // 🔥 FIXED: Added 'break-words' to the class list to prevent layout stretching
-    // 🔥 FIXED AGAIN: Changed 'break-words' to 'break-all' for aggressive chopping
     let textHtml = '';
     if (m.text && m.text !== "Sent a GIF") {
       textHtml = `<p class="text-[14.5px] leading-relaxed whitespace-pre-wrap break-all ${m.fileUrl ? 'mb-2' : ''}">${m.text}</p>`;
@@ -868,43 +882,32 @@ function renderOrUpdateMessage(docId, m) {
     const text = input.value.trim();
     if (!text) return;
 
-    // 1. Save the current state locally
     const currentActionType = actionState.type;
     const currentActionDocId = actionState.docId;
 
-    // 2. Clear the UI immediately to prevent spamming
     cancelAction(); 
 
     try {
       if (currentActionType === 'edit') {
-        await updateDoc(doc(db, "rooms", currentRoomId, "messages", currentActionDocId), {
-          text: text,
-          isEdited: true
-        });
+        await updateDoc(doc(db, "rooms", currentRoomId, "messages", currentActionDocId), { text: text, isEdited: true });
       } else {
         const payload = {
           uid: auth.currentUser.uid,
           nickname: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
-          text: text,
-          time: serverTimestamp()
+          text: text, time: serverTimestamp()
         };
-        
         if (currentActionType === 'reply') {
           const originalMsg = window.loadedMessages[currentActionDocId];
           payload.replyTo = {
-            id: currentActionDocId,
-            nickname: originalMsg.nickname,
+            id: currentActionDocId, nickname: originalMsg.nickname,
             text: originalMsg.text.substring(0, 50) + (originalMsg.text.length > 50 ? '...' : '')
           };
         }
         await addDoc(collection(db, "rooms", currentRoomId, "messages"), payload);
       }
-      
       setTimeout(() => document.getElementById('messageBox').scrollTop = document.getElementById('messageBox').scrollHeight, 100);
     } catch(err) {
-      // 3. If the database fails, put the text back so the user doesn't lose their message
-      input.value = text;
-      alert("Action failed: " + err.message);
+      input.value = text; alert("Action failed: " + err.message);
     }
   };
 
@@ -917,47 +920,25 @@ function renderOrUpdateMessage(docId, m) {
     if (!file) return;
 
     const attachBtnIcon = document.getElementById('attachBtnIcon');
-    // Change icon to a spinner while uploading
     attachBtnIcon.className = "fa-solid fa-circle-notch fa-spin text-indigo-500";
-
     const formData = new FormData();
-    formData.append('file', file);
-    formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+    formData.append('file', file); formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
 
     try {
-      // Use 'auto' to handle both images and raw files (like PDFs)
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`, {
-        method: 'POST',
-        body: formData
-      });
-      
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`, { method: 'POST', body: formData });
       const data = await res.json();
-      
       if (data.secure_url) {
-        // Save to Firestore once we have the URL
         await addDoc(collection(db, "rooms", currentRoomId, "messages"), {
           uid: auth.currentUser.uid,
           nickname: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
-          text: `Sent a file: ${file.name}`, // Keeps your security rules happy (must be a string)
-          fileUrl: data.secure_url,
-          fileType: file.type || data.resource_type,
-          fileName: file.name,
-          time: serverTimestamp()
+          text: `Sent a file: ${file.name}`, fileUrl: data.secure_url,
+          fileType: file.type || data.resource_type, fileName: file.name, time: serverTimestamp()
         });
-        
-        // Scroll to bottom
         const box = document.getElementById('messageBox');
         setTimeout(() => box.scrollTop = box.scrollHeight, 100);
-      } else {
-        throw new Error(data.error?.message || "Upload failed");
-      }
-    } catch (err) {
-      alert("Error uploading file: " + err.message);
-    } finally {
-      // Reset icon and input
-      attachBtnIcon.className = "fa-solid fa-paperclip text-lg";
-      e.target.value = ''; 
-    }
+      } else throw new Error(data.error?.message || "Upload failed");
+    } catch (err) { alert("Error uploading file: " + err.message); } 
+    finally { attachBtnIcon.className = "fa-solid fa-paperclip text-lg"; e.target.value = ''; }
   });
 
  // --- GIPHY LOGIC ---
@@ -966,44 +947,25 @@ const GIPHY_API_KEY = 'TbcofJ30evYoPwTW8w2WCS4gBZD01hVh';
 window.toggleGiphyPanel = () => {
   const panel = document.getElementById('giphyPanel');
   panel.classList.toggle('hidden');
-  if (!panel.classList.contains('hidden')) {
-    document.getElementById('giphySearchInput').focus();
-    searchGiphy('trending'); // Show trending by default
-  }
+  if (!panel.classList.contains('hidden')) { document.getElementById('giphySearchInput').focus(); searchGiphy('trending'); }
 };
 
-// Search GIPHY as you type
-document.getElementById('giphySearchInput').addEventListener('input', (e) => {
-  const term = e.target.value.trim();
-  searchGiphy(term || 'trending');
-});
+document.getElementById('giphySearchInput').addEventListener('input', (e) => { searchGiphy(e.target.value.trim() || 'trending'); });
 
 async function searchGiphy(term) {
-  const endpoint = term === 'trending' 
-    ? `https://api.giphy.com/v1/gifs/trending?api_key=${GIPHY_API_KEY}&limit=10&rating=g`
-    : `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${encodeURIComponent(term)}&limit=10&rating=g`;
-  
+  const endpoint = term === 'trending' ? `https://api.giphy.com/v1/gifs/trending?api_key=${GIPHY_API_KEY}&limit=10&rating=g` : `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${encodeURIComponent(term)}&limit=10&rating=g`;
   try {
     const res = await fetch(endpoint);
     const { data } = await res.json();
-    const resultsContainer = document.getElementById('giphyResults');
-    resultsContainer.innerHTML = data.map(gif => `
-      <img src="${gif.images.fixed_height_small.url}" 
-           class="w-full h-24 object-cover cursor-pointer hover:opacity-80 rounded-md" 
-           onclick="sendGiphy('${gif.images.fixed_height.url}')">
-    `).join('');
+    document.getElementById('giphyResults').innerHTML = data.map(gif => `<img src="${gif.images.fixed_height_small.url}" class="w-full h-24 object-cover cursor-pointer hover:opacity-80 rounded-md" onclick="sendGiphy('${gif.images.fixed_height.url}')">`).join('');
   } catch (err) { console.error("Giphy error:", err); }
 }
 
 window.sendGiphy = async (url) => {
   try {
     await addDoc(collection(db, "rooms", currentRoomId, "messages"), {
-      uid: auth.currentUser.uid,
-      nickname: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
-      text: "Sent a GIF",
-      fileUrl: url, // We reuse your existing media rendering logic!
-      fileType: "image/gif",
-      time: serverTimestamp()
+      uid: auth.currentUser.uid, nickname: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
+      text: "Sent a GIF", fileUrl: url, fileType: "image/gif", time: serverTimestamp()
     });
     document.getElementById('giphyPanel').classList.add('hidden');
   } catch (err) { alert(err.message); }
@@ -1021,32 +983,22 @@ window.openProfileModal = async () => {
   
   currentAvatarUrl = data.avatarUrl || `https://ui-avatars.com/api/?name=${data.nickname}&background=6366f1&color=fff`;
   document.getElementById('profileAvatarPreview').src = currentAvatarUrl;
-  
   document.getElementById('profileModal').classList.remove('hidden');
 };
 
-// Avatar Upload via existing Cloudinary logic
 document.getElementById('avatarUploadInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  const formData = new FormData(); formData.append('file', file); formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
 
   try {
     document.getElementById('profileAvatarPreview').style.opacity = '0.5';
-    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
-      method: 'POST', body: formData
-    });
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, { method: 'POST', body: formData });
     const data = await res.json();
     currentAvatarUrl = data.secure_url;
     document.getElementById('profileAvatarPreview').src = currentAvatarUrl;
-  } catch(err) {
-    alert("Avatar upload failed");
-  } finally {
-    document.getElementById('profileAvatarPreview').style.opacity = '1';
-  }
+  } catch(err) { alert("Avatar upload failed"); } 
+  finally { document.getElementById('profileAvatarPreview').style.opacity = '1'; }
 });
 
 document.getElementById('profileForm').onsubmit = async (e) => {
@@ -1057,20 +1009,15 @@ document.getElementById('profileForm').onsubmit = async (e) => {
   try {
     const newName = document.getElementById('profileName').value;
     await updateDoc(doc(db, "users", auth.currentUser.uid), {
-      nickname: newName,
-      status: document.getElementById('profileStatus').value,
-      bio: document.getElementById('profileBio').value,
-      avatarUrl: currentAvatarUrl
+      nickname: newName, status: document.getElementById('profileStatus').value,
+      bio: document.getElementById('profileBio').value, avatarUrl: currentAvatarUrl
     });
     
     document.getElementById('userName').textContent = newName;
     document.getElementById('sidebarAvatar').src = currentAvatarUrl;
     closeModals();
-  } catch (err) {
-    alert(err.message);
-  } finally {
-    btn.innerHTML = 'Save Changes';
-  }
+  } catch (err) { alert(err.message); } 
+  finally { btn.innerHTML = 'Save Changes'; }
 };
 
 window.viewPublicProfile = async (uid) => {
@@ -1083,13 +1030,42 @@ window.viewPublicProfile = async (uid) => {
     document.getElementById('publicStatus').textContent = data.status || "No status set";
     document.getElementById('publicBio').textContent = data.bio || "This user hasn't written a bio yet.";
     document.getElementById('publicAvatar').src = data.avatarUrl || `https://ui-avatars.com/api/?name=${data.nickname}&background=6366f1&color=fff`;
-    
     document.getElementById('publicProfileModal').classList.remove('hidden');
-  } catch (err) {
-    console.error(err);
-  }
+  } catch (err) { console.error(err); }
 };
 
+// --- AUTO-HIDE UNREAD SEPARATOR ON SCROLL DOWN ---
+const msgBox = document.getElementById('messageBox');
+let lastScrollTop = 0;
+
+msgBox.addEventListener('scroll', function() {
+  let currentScroll = this.scrollTop;
+  
+  // Check if the user is scrolling DOWN (added a 10px threshold to prevent accidental triggers)
+  if (currentScroll > lastScrollTop + 10) { 
+    const separator = document.getElementById('unread-separator');
+    
+    if (separator) {
+      // Smoothly fade it out before removing it from the DOM
+      separator.style.transition = 'opacity 0.3s ease, height 0.3s ease, margin 0.3s ease';
+      separator.style.opacity = '0';
+      separator.style.height = '0px';
+      separator.style.marginTop = '0px';
+      separator.style.marginBottom = '0px';
+      separator.style.overflow = 'hidden';
+      
+      // Remove it completely after the fade animation finishes
+      setTimeout(() => {
+        if (separator.parentNode) {
+          separator.remove();
+        }
+      }, 300);
+    }
+  }
+  
+  // Update the last scroll position
+  lastScrollTop = currentScroll <= 0 ? 0 : currentScroll;
+});
 </script>
 </body>
 </html>
