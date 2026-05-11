@@ -340,7 +340,6 @@ window.closeModals = () => {
 
   let isSignUpMode = false;
   let currentRoomId = "general";
-  let messageSub = null;
   let availableRooms = [];
   
   // App & Read/Unread State Tracking
@@ -350,11 +349,17 @@ window.closeModals = () => {
   let pendingInvites = new Set();
   window.userProfilesCache = {};
 
-  let userLastRead = {};           // Local map of {roomId: timestamp_ms}
-  let unreadListeners = {};        // Firestore listeners per room
-  let unreadCounts = {};           // Local map of {roomId: count}
-  let currentRoomEntryTime = 0;    // Time user opened current room
-  let firstUnreadFound = false;    // Tracks if separator was injected
+  let userLastRead = {};           
+  let unreadListeners = {};        
+  let unreadCounts = {};           
+  let currentRoomEntryTime = 0;    
+  let firstUnreadFound = false;    
+
+  // --- NEW: PAGINATION STATES ---
+  let unsubscribeMessages = null;
+  let currentMessageLimit = 50;
+  let isFetchingMore = false;
+  let oldScrollHeight = 0;
 
   // --- UI TOGGLES (Auth) ---
   const toggleBtn = document.getElementById('toggleAuthMode');
@@ -375,7 +380,6 @@ window.closeModals = () => {
       if (isSignUpMode) {
         const userCred = await createUserWithEmailAndPassword(auth, email, password);
         await updateProfile(userCred.user, { displayName: name });
-        // Initialize read states for new accounts
         await setDoc(doc(db, "users", userCred.user.uid), { nickname: name, email: email, lastRead: {}, createdAt: serverTimestamp() });
       } else {
         await signInWithEmailAndPassword(auth, email, password);
@@ -390,7 +394,6 @@ window.closeModals = () => {
     document.getElementById('authOverlay').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
     
-    // Fetch User Profile & Read States
     const userDoc = await getDoc(doc(db, "users", u.uid));
     const userData = userDoc.exists() ? userDoc.data() : {};
     userLastRead = userData.lastRead || {};
@@ -399,7 +402,6 @@ window.closeModals = () => {
     document.getElementById('userName').textContent = userData.nickname || u.displayName || u.email.split('@')[0];
     document.getElementById('sidebarAvatar').src = displayAvatar;
 
-    // --- REALTIME PRESENCE ---
     const userStatusRef = ref(dbRTDB, '/status/' + u.uid);
     const connectedRef = ref(dbRTDB, '.info/connected');
     
@@ -417,8 +419,6 @@ window.closeModals = () => {
   } else {
     document.getElementById('authOverlay').classList.remove('hidden');
     document.getElementById('app').classList.add('hidden');
-    
-    // Cleanup listeners on logout
     for(const key in unreadListeners) { unreadListeners[key](); }
     unreadListeners = {}; unreadCounts = {};
   }
@@ -552,14 +552,11 @@ window.closeModals = () => {
     div.onclick = () => switchRoom(id, name, type, createdBy);
     document.getElementById('roomsList').appendChild(div);
 
-    // Initialize Unread Tracking Listener for this Room
     setupUnreadListener(id);
   }
 
   function setupUnreadListener(roomId) {
     if (unreadListeners[roomId]) return;
-
-    // Listen to the last 100 messages to count unread messages without processing the entire history
     const q = query(collection(db, "rooms", roomId, "messages"), orderBy("time", "desc"), limit(100));
     unreadListeners[roomId] = onSnapshot(q, snap => {
       let count = 0;
@@ -568,7 +565,6 @@ window.closeModals = () => {
       snap.forEach(docSnap => {
         const m = docSnap.data();
         const t = m.time ? m.time.toMillis() : Date.now();
-        // Increment if message is newer than the user's last read time and wasn't sent by the user
         if (t > lr && m.uid !== auth.currentUser.uid) count++;
       });
 
@@ -580,14 +576,12 @@ window.closeModals = () => {
 
   function updateRoomTabBadge(roomId) {
     const tab = document.getElementById(`tab-${roomId}`);
-    if (!tab) return;
-    if (roomId === currentRoomId) return; // Active room styling overrides this logic
+    if (!tab || roomId === currentRoomId) return;
 
     const count = unreadCounts[roomId] || 0;
     let badge = document.getElementById(`badge-${roomId}`);
 
     if (count > 0) {
-      // Create or update the red number badge, but DO NOT highlight the chat text/background
       if (!badge) {
         badge = document.createElement('span');
         badge.id = `badge-${roomId}`;
@@ -596,7 +590,6 @@ window.closeModals = () => {
       }
       badge.textContent = count > 99 ? '99+' : count;
     } else {
-      // Remove the badge when read, leaving the normal tab styling intact
       if (badge) badge.remove();
     }
   }
@@ -609,51 +602,25 @@ window.closeModals = () => {
     document.title = total > 0 ? `(${total > 99 ? '99+' : total}) Nexus Chat | Premium` : 'Nexus Chat | Premium';
   }
 
-  function switchRoom(roomId, roomName, type, createdBy) {
-    currentRoomId = roomId;
-    document.getElementById('currentRoomName').textContent = roomName;
-    document.getElementById('roomTypeIcon').className = `fa-solid ${type === 'private' ? 'fa-lock' : 'fa-hashtag'} text-slate-400 text-lg`;
-    
-    const deleteBtn = document.getElementById('deleteRoomBtn');
-    (roomId !== 'general' && createdBy === auth.currentUser.uid) ? deleteBtn.classList.remove('hidden') : deleteBtn.classList.add('hidden');
-    window.cancelAction(); 
-
-    // --- NEW READ RECEIPTS LOGIC ---
-    currentRoomEntryTime = userLastRead[roomId] || 0;
-    firstUnreadFound = false;
-
-    // Immediately update read status locally & in database
-    userLastRead[roomId] = Date.now();
-    setDoc(doc(db, "users", auth.currentUser.uid), {
-      lastRead: { [roomId]: userLastRead[roomId] }
-    }, { merge: true }); // Merge ensures we only update the lastRead map and not overwrite profile data
-
-    unreadCounts[roomId] = 0; // Clear immediately for snappy UI
-    updateTotalUnread();
-
-    // Reset styles for all tabs, then highlight active
-    document.querySelectorAll('#roomsList > div').forEach(el => {
-      el.classList.remove('bg-indigo-600/20', 'text-indigo-400', 'font-bold');
-      const id = el.id.replace('tab-', '');
-      updateRoomTabBadge(id);
-    });
-
-    const activeTab = document.getElementById(`tab-${roomId}`);
-    if(activeTab) {
-      activeTab.classList.remove('text-slate-100', 'text-slate-400', 'bg-slate-800');
-      activeTab.classList.add('bg-indigo-600/20', 'text-indigo-400', 'font-bold');
-      const badge = document.getElementById(`badge-${roomId}`);
-      if(badge) badge.remove();
-    }
-
-    if (messageSub) messageSub();
+// --- NEW: PAGINATION MESSAGE LISTENER ---
+  window.subscribeToMessages = () => {
+    if (unsubscribeMessages) unsubscribeMessages();
     const box = document.getElementById('messageBox');
-    box.innerHTML = '';
-    window.loadedMessages = {};
+    
+    // Ordered Descending to grab newest N messages. We insert chronologically below.
+    const q = query(
+      collection(db, "rooms", currentRoomId, "messages"), 
+      orderBy("time", "desc"), 
+      limit(currentMessageLimit)
+    );
 
     let isFirstLoadBatch = true;
-    const q = query(collection(db, "rooms", roomId, "messages"), orderBy("time", "asc"));
-    messageSub = onSnapshot(q, snap => {
+    
+    unsubscribeMessages = onSnapshot(q, snap => {
+      // 1. Capture exact measurements BEFORE injection
+      const prevScrollHeight = box.scrollHeight;
+      const prevScrollTop = box.scrollTop;
+
       snap.docChanges().forEach(change => {
         const docId = change.doc.id;
         const m = change.doc.data();
@@ -663,11 +630,13 @@ window.closeModals = () => {
           if (locallyHiddenMessages.has(docId)) return;
           renderOrUpdateMessage(docId, m);
 
-          if (!document.getElementById('mediaSidebar').classList.contains('hidden')) { renderMediaSidebar(); }
+          if (document.getElementById('mediaSidebar') && !document.getElementById('mediaSidebar').classList.contains('hidden')) { 
+            if(typeof renderMediaSidebar === 'function') renderMediaSidebar(); 
+          }
 
-          if (change.type === "added" && !isFirstLoadBatch && m.uid !== auth.currentUser.uid && !appSettings.muted) {
+          if (change.type === "added" && !isFirstLoadBatch && !isFetchingMore && m.uid !== auth.currentUser.uid && !appSettings.muted) {
             if ("Notification" in window && Notification.permission === "granted") {
-              const notification = new Notification(`Nexus Chat: ${roomName}`, {
+              const notification = new Notification(`Nexus Chat: ${document.getElementById('currentRoomName').textContent}`, {
                 body: `${m.nickname}: ${m.text}`,
                 icon: "https://cdn-icons-png.flaticon.com/512/1041/1041916.png" 
               });
@@ -682,19 +651,92 @@ window.closeModals = () => {
         }
       });
       
-      // Auto-Scroll to Separator OR Bottom
-      if (isFirstLoadBatch) {
+      // 2. Measure again AFTER elements were added
+      const newScrollHeight = box.scrollHeight;
+
+      if (isFetchingMore) {
+        // PAGINATION: Only adjust if the server actually sent the older messages and changed the height
+        if (newScrollHeight > prevScrollHeight) {
+          box.classList.remove('scroll-smooth');
+          // Instantly lock scroll position exactly at the gap
+          box.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+          
+          requestAnimationFrame(() => {
+            box.classList.add('scroll-smooth');
+            const loader = document.getElementById('pagination-loader');
+            if (loader) loader.remove();
+            isFetchingMore = false; // Successfully fetched, unlock!
+          });
+        }
+        // Note: If height didn't change, we just ignore the cache hit and wait for the server snapshot.
+      } 
+      else if (isFirstLoadBatch) {
+        // NORMAL LOAD (Joining a room)
+        const loader = document.getElementById('pagination-loader');
+        if (loader) loader.remove();
+
         const sep = document.getElementById('unread-separator');
         if (sep) {
           setTimeout(() => sep.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
         } else {
           box.scrollTop = box.scrollHeight;
         }
-        isFirstLoadBatch = false; 
-      } else {
-        box.scrollTop = box.scrollHeight;
+      } 
+      else {
+        // LIVE MESSAGES: Handle live incoming messages from other users
+        const isNearBottom = prevScrollHeight - box.clientHeight - prevScrollTop < 150;
+        if (isNearBottom) {
+          box.scrollTop = box.scrollHeight;
+        }
       }
+      
+      isFirstLoadBatch = false;
     });
+  };
+
+  function switchRoom(roomId, roomName, type, createdBy) {
+    currentRoomId = roomId;
+    document.getElementById('currentRoomName').textContent = roomName;
+    document.getElementById('roomTypeIcon').className = `fa-solid ${type === 'private' ? 'fa-lock' : 'fa-hashtag'} text-slate-400 text-lg`;
+    
+    const deleteBtn = document.getElementById('deleteRoomBtn');
+    (roomId !== 'general' && createdBy === auth.currentUser.uid) ? deleteBtn.classList.remove('hidden') : deleteBtn.classList.add('hidden');
+    window.cancelAction(); 
+
+    // Reset Limit and Pagination States
+    currentMessageLimit = 50;
+    isFetchingMore = false;
+
+    currentRoomEntryTime = userLastRead[roomId] || 0;
+    firstUnreadFound = false;
+
+    userLastRead[roomId] = Date.now();
+    setDoc(doc(db, "users", auth.currentUser.uid), {
+      lastRead: { [roomId]: userLastRead[roomId] }
+    }, { merge: true });
+
+    unreadCounts[roomId] = 0; 
+    updateTotalUnread();
+
+    document.querySelectorAll('#roomsList > div').forEach(el => {
+      el.classList.remove('bg-indigo-600/20', 'text-indigo-400', 'font-bold');
+      const id = el.id.replace('tab-', '');
+      updateRoomTabBadge(id);
+    });
+
+    const activeTab = document.getElementById(`tab-${roomId}`);
+    if(activeTab) {
+      activeTab.classList.remove('text-slate-100', 'text-slate-400', 'bg-slate-800');
+      activeTab.classList.add('bg-indigo-600/20', 'text-indigo-400', 'font-bold');
+      const badge = document.getElementById(`badge-${roomId}`);
+      if(badge) badge.remove();
+    }
+
+    const box = document.getElementById('messageBox');
+    box.innerHTML = '';
+    window.loadedMessages = {};
+
+    window.subscribeToMessages();
   }
 
   window.deleteCurrentRoom = async () => {
@@ -824,48 +866,44 @@ function renderOrUpdateMessage(docId, m) {
     let existingDiv = document.getElementById(`msg-${docId}`);
     let isNew = !existingDiv;
 
-    // --- NEW SEPARATOR INJECTION ---
+    // --- Prevent flicker when re-subscribing with a higher pagination limit ---
+    const contentHash = JSON.stringify({t: m.text, e: m.isEdited, u: m.fileUrl, r: m.replyTo?.id, n: m.nickname});
+    if (!isNew && existingDiv.dataset.hash === contentHash) {
+      return; 
+    }
+
     if (isNew) {
       const mTime = m.time ? m.time.toMillis() : Date.now();
       
-      // Inject Unread divider if it's the first message found past the entry time and it isn't ours
       if (!firstUnreadFound && mTime > currentRoomEntryTime && !isMe) {
         firstUnreadFound = true;
         const sep = document.createElement('div');
         sep.id = 'unread-separator';
         sep.className = 'w-full flex items-center my-6 z-10 px-4';
-        sep.dataset.time = mTime - 1; // Ensure it sorts right before the unread message
+        sep.dataset.time = mTime - 1; 
         sep.innerHTML = `
           <div class="flex-1 border-t border-red-200 dark:border-red-900/50"></div>
           <span class="px-4 py-1 text-[11px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest bg-red-50 dark:bg-red-900/30 rounded-full mx-4 border border-red-100 dark:border-red-900/50 shadow-sm">New Messages</span>
           <div class="flex-1 border-t border-red-200 dark:border-red-900/50"></div>
         `;
         
-        // Chronological insertion for separator
         const children = Array.from(box.children).filter(c => c.dataset && c.dataset.time);
         const nextNode = children.find(c => Number(c.dataset.time) > (mTime - 1));
-        if (nextNode) {
-          box.insertBefore(sep, nextNode);
-        } else {
-          box.appendChild(sep);
-        }
+        if (nextNode) box.insertBefore(sep, nextNode); else box.appendChild(sep);
       }
 
       existingDiv = document.createElement('div');
       existingDiv.id = `msg-${docId}`;
-      existingDiv.dataset.time = mTime; // Store timestamp for sorting
+      existingDiv.dataset.time = mTime; 
       
-      // Chronological insertion for the message instead of just appending
+      // Chronological Insertion (Works perfectly even with Descending Limits!)
       const children = Array.from(box.children).filter(c => c.dataset && c.dataset.time);
       const nextNode = children.find(c => Number(c.dataset.time) > mTime);
       
-      if (nextNode) {
-        box.insertBefore(existingDiv, nextNode);
-      } else {
-        box.appendChild(existingDiv);
-      }
+      if (nextNode) box.insertBefore(existingDiv, nextNode); else box.appendChild(existingDiv);
     }
     
+    existingDiv.dataset.hash = contentHash;
     existingDiv.className = `flex group w-full transition-all duration-200 relative ${isMe ? 'justify-end' : 'justify-start'}`;
     
     let replyHtml = '';
@@ -931,7 +969,6 @@ function renderOrUpdateMessage(docId, m) {
       
       window.replyMessage = window.startReply;
       
-      // --- DYNAMIC NICKNAME UPDATER ---
       const uidsToFetch = [];
       if (!isMe) uidsToFetch.push(m.uid);
       if (m.replyTo && m.replyTo.uid) uidsToFetch.push(m.replyTo.uid);
@@ -943,13 +980,12 @@ function renderOrUpdateMessage(docId, m) {
             document.querySelectorAll(`.msg-author-${uid}`).forEach(el => el.textContent = freshName);
           }
         } else {
-          window.userProfilesCache[uid] = { pending: true }; // Prevent redundant fetches
+          window.userProfilesCache[uid] = { pending: true }; 
           getDoc(doc(db, "users", uid)).then(snap => {
             if (snap.exists()) {
               window.userProfilesCache[uid] = snap.data();
               const freshName = window.userProfilesCache[uid].nickname;
               if (freshName) {
-                // Instantly update ALL text bubbles from this user in the DOM
                 document.querySelectorAll(`.msg-author-${uid}`).forEach(el => el.textContent = freshName);
               }
             }
@@ -983,7 +1019,7 @@ function renderOrUpdateMessage(docId, m) {
           const originalMsg = window.loadedMessages[currentActionDocId];
           payload.replyTo = {
             id: currentActionDocId, 
-            uid: originalMsg.uid, // <-- ADD THIS LINE
+            uid: originalMsg.uid, 
             nickname: originalMsg.nickname,
             text: originalMsg.text.substring(0, 50) + (originalMsg.text.length > 50 ? '...' : '')
           };
@@ -1094,7 +1130,6 @@ document.getElementById('profileForm').onsubmit = async (e) => {
   try {
     const newName = document.getElementById('profileName').value;
     
-    // --- FIX: Regenerate default avatar with the new nickname ---
     let finalAvatarUrl = currentAvatarUrl;
     if (finalAvatarUrl.includes("ui-avatars.com")) {
       finalAvatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(newName)}&background=6366f1&color=fff`;
@@ -1104,18 +1139,13 @@ document.getElementById('profileForm').onsubmit = async (e) => {
       nickname: newName, 
       status: document.getElementById('profileStatus').value,
       bio: document.getElementById('profileBio').value, 
-      // If it's a default UI avatar, save an empty string so the app 
-      // is forced to auto-generate a fresh one on next reload.
-      // If it's a custom Cloudinary upload, save the real URL.
       avatarUrl: finalAvatarUrl.includes("ui-avatars.com") ? "" : finalAvatarUrl
     });
     
-    // Update Sidebar UI
     document.getElementById('userName').textContent = newName;
     document.getElementById('sidebarAvatar').src = finalAvatarUrl;
     currentAvatarUrl = finalAvatarUrl;
 
-    // Update Text Bubbles Instantly (from the previous fix)
     if (window.userProfilesCache) {
       window.userProfilesCache[auth.currentUser.uid] = window.userProfilesCache[auth.currentUser.uid] || {};
       window.userProfilesCache[auth.currentUser.uid].nickname = newName;
@@ -1141,38 +1171,46 @@ window.viewPublicProfile = async (uid) => {
   } catch (err) { console.error(err); }
 };
 
-// --- AUTO-HIDE UNREAD SEPARATOR WHEN SCROLLED TO BOTTOM ---
+// --- SCROLL TO TOP FOR LAZY LOADING ---
 const msgBox = document.getElementById('messageBox');
 
 msgBox.addEventListener('scroll', function() {
-  // Check if the scroll position + the visible height equals the total scrollable height.
-  // We use a 10px threshold to ensure it triggers smoothly even with fractional pixel rendering.
   const isAtBottom = this.scrollTop + this.clientHeight >= this.scrollHeight - 10;
   
   if (isAtBottom) { 
     const separator = document.getElementById('unread-separator');
-    
     if (separator) {
-      // Smoothly fade it out before removing it from the DOM
       separator.style.transition = 'opacity 0.3s ease, height 0.3s ease, margin 0.3s ease';
       separator.style.opacity = '0';
       separator.style.height = '0px';
       separator.style.marginTop = '0px';
       separator.style.marginBottom = '0px';
       separator.style.overflow = 'hidden';
-      
-      // Remove it completely after the fade animation finishes
-      setTimeout(() => {
-        if (separator.parentNode) {
-          separator.remove();
-        }
-      }, 300);
+      setTimeout(() => { if (separator.parentNode) separator.remove(); }, 300);
+    }
+  }
+
+  // --- NEW: Trigger loading more messages when scrolled to the very top ---
+  if (this.scrollTop === 0 && !isFetchingMore) {
+    const currentMsgCount = Object.keys(window.loadedMessages).length;
+    // Only fetch more if we aren't completely empty and haven't fetched them all
+    if (currentMsgCount >= currentMessageLimit) {
+      isFetchingMore = true;
+      oldScrollHeight = this.scrollHeight;
+      currentMessageLimit += 50; 
+
+      const loadingEl = document.createElement('div');
+      loadingEl.id = 'pagination-loader';
+      loadingEl.className = 'text-center text-xs text-indigo-500 py-3 w-full font-medium z-50 transition-opacity';
+      loadingEl.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin mr-2"></i> Loading older messages...';
+      this.prepend(loadingEl);
+
+      window.subscribeToMessages();
     }
   }
 });
 
 // --- MEDIA POPUP & PREVIEW LOGIC ---
-
   window.toggleMediaDropdown = (e) => {
     if(e) e.stopPropagation();
     const dropdown = document.getElementById('mediaDropdown');
@@ -1182,7 +1220,6 @@ msgBox.addEventListener('scroll', function() {
     }
   };
 
-  // Close dropdown if user clicks outside of it
   document.addEventListener('click', (e) => {
     const dropdown = document.getElementById('mediaDropdown');
     const toggleBtn = document.getElementById('toggleMediaBtn');
@@ -1196,7 +1233,6 @@ msgBox.addEventListener('scroll', function() {
     if (!container) return;
     container.innerHTML = '';
     
-    // Sort messages newest first
     const messages = Object.values(window.loadedMessages).sort((a, b) => {
        const tA = a.time ? a.time.toMillis() : 0;
        const tB = b.time ? b.time.toMillis() : 0;
